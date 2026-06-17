@@ -108,14 +108,30 @@ def header_para(side_label, title):
             + '<w:r>' + rpr_title + '<w:t xml:space="preserve">' + esc(title) + '</w:t></w:r>'
             + '</w:p>')
 
-def track_para(text, sz):
-    """Трек — Monotype Corsiva, bold, 444543, заданный sz (half-points)."""
-    rpr = ('<w:rPr><w:rFonts w:ascii="Monotype Corsiva" w:hAnsi="Monotype Corsiva" '
-           'w:cs="Tahoma"/><w:b/><w:bCs/><w:color w:val="444543"/><w:sz w:val="%d"/>'
-           '<w:szCs w:val="%d"/><w:shd w:val="clear" w:color="auto" w:fill="F7F7F9"/>'
-           '<w:lang w:val="en-US"/></w:rPr>' % (sz, sz))
-    return ('<w:p><w:pPr>' + rpr + '</w:pPr><w:r>' + rpr
-            + '<w:t xml:space="preserve">' + esc(text) + '</w:t></w:r></w:p>')
+def _track_rpr(sz, bold):
+    """rPr трека — Monotype Corsiva, 444543, заданный sz; жирность по флагу."""
+    b = "<w:b/><w:bCs/>" if bold else ""
+    return ('<w:rPr><w:rFonts w:ascii="Monotype Corsiva" w:hAnsi="Monotype Corsiva" '
+            'w:cs="Tahoma"/>%s<w:color w:val="444543"/><w:sz w:val="%d"/>'
+            '<w:szCs w:val="%d"/><w:shd w:val="clear" w:color="auto" w:fill="F7F7F9"/>'
+            '<w:lang w:val="en-US"/></w:rPr>' % (b, sz, sz))
+
+def _run(text, rpr):
+    return '<w:r>' + rpr + '<w:t xml:space="preserve">' + esc(text) + '</w:t></w:r>'
+
+def track_para(num, name, sz):
+    """Строка трека 'NN - [Артист - ]Песня'. Если у трека есть исполнитель
+    (часть до первого ' - '), его выводим жирным, песню — обычным шрифтом;
+    без исполнителя вся песня обычным. Номер всегда обычным."""
+    reg = _track_rpr(sz, False)
+    artist, sep, song = name.partition(" - ")
+    runs = [_run("%s - " % num, reg)]
+    if sep:                                            # 'Артист - Песня'
+        runs.append(_run(artist, _track_rpr(sz, True)))
+        runs.append(_run(" - " + song, reg))
+    else:
+        runs.append(_run(name, reg))
+    return '<w:p><w:pPr>' + reg + '</w:pPr>' + "".join(runs) + '</w:p>'
 
 def empty_para():
     return '<w:p/>'
@@ -136,10 +152,10 @@ def build_title_inner(lines):
 
 def build_cell_inner(header_a, header_b, side_a, side_b, sz):
     parts = [header_para("Side A:", header_a)]
-    parts += [track_para("%02d - %s" % (i, t), sz) for i, t in enumerate(side_a, 1)]
+    parts += [track_para("%02d" % i, t, sz) for i, t in enumerate(side_a, 1)]
     parts.append(empty_para())
     parts.append(header_para("Side B:", header_b))
-    parts += [track_para("%02d - %s" % (i, t), sz) for i, t in enumerate(side_b, 1)]
+    parts += [track_para("%02d" % i, t, sz) for i, t in enumerate(side_b, 1)]
     parts.append(empty_para())
     return "".join(parts)
 

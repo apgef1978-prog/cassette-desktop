@@ -506,6 +506,12 @@ PAGE = r"""<!doctype html><html lang="ru"><head><meta charset="utf-8">
       <button id="searchBtn2" class="ghost" style="flex:0 0 auto">Найти</button>
     </div>
     <div id="results2" class="results"></div>
+    <div style="display:flex;align-items:center;gap:10px;margin:12px 0 8px;color:var(--mut);font-size:13px">
+      <span style="flex:1;height:1px;background:var(--line)"></span>или<span style="flex:1;height:1px;background:var(--line)"></span>
+    </div>
+    <button id="folderBtn2" class="ghost" style="width:100%">📁 Взять из папки с музыкой</button>
+    <p class="muted" style="margin:6px 0 0">Название (имя папки) и треклист прочитаем из аудиофайлов. Обложка всегда от первого альбома.</p>
+    <div id="folderErr2" class="err"></div>
     <label>Название 2-го альбома</label>
     <input id="title2" placeholder="Михаил Круг - Жиган-лимон (1994)">
     <label>Треклист 2-го альбома — <code>Название | M:SS</code></label>
@@ -590,20 +596,23 @@ async function pickFolder(){
   }
   return (prompt("Путь к папке с музыкой:")||"").trim();   // фолбэк в браузере
 }
-$("#folderBtn").onclick=async()=>{
-  const err=$("#folderErr"); err.textContent=""; const btn=$("#folderBtn");
+// Чтение треклиста из папки. useCover=true — берём ещё и обложку (для альбома 1).
+async function loadFromFolder(btn, err, titleEl, listEl, useCover){
+  err.textContent="";
   let folder=""; try{folder=await pickFolder();}catch(e){err.textContent=e.message;return;}
   if(!folder)return;
   btn.disabled=true; btn.classList.add("spin"); const t0=btn.textContent; btn.textContent="Чтение папки…";
   try{
     const r=await fetch("/api/folder",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({folder})});
     const d=await r.json(); if(d.error)throw new Error(d.error);
-    $("#title").value=d.title; coverUrl=d.cover||""; $("#cover").src=d.cover||"";
-    $("#tracklist").value=d.tracks.map(t=>`${t.name} | ${t.dur}`).join("\n");
-    err.textContent=d.cover?"":"Обложка в папке не найдена — загрузите свою.";
+    titleEl.value=d.title;
+    listEl.value=d.tracks.map(t=>`${t.name} | ${t.dur}`).join("\n");
+    if(useCover){coverUrl=d.cover||""; $("#cover").src=d.cover||"";
+      err.textContent=d.cover?"":"Обложка в папке не найдена — загрузите свою.";}
   }catch(e){err.textContent=e.message;}
   finally{btn.disabled=false;btn.classList.remove("spin");btn.textContent=t0;}
-};
+}
+$("#folderBtn").onclick=()=>loadFromFolder($("#folderBtn"),$("#folderErr"),$("#title"),$("#tracklist"),true);
 
 // --- Альбом 2 (Side B) ---
 $("#searchBtn2").onclick=()=>doSearch($("#q2").value.trim(),$("#results2"),$("#buildErr"),async(a,el)=>{
@@ -613,6 +622,7 @@ $("#searchBtn2").onclick=()=>doSearch($("#q2").value.trim(),$("#results2"),$("#b
     $("#tracklist2").value=d.tracks.map(t=>`${t.name} | ${t.dur}`).join("\n");
   }catch(e){$("#buildErr").textContent=e.message;}
 });
+$("#folderBtn2").onclick=()=>loadFromFolder($("#folderBtn2"),$("#folderErr2"),$("#title2"),$("#tracklist2"),false);
 
 // Переключение режима Side B
 document.querySelectorAll('input[name="sbmode"]').forEach(r=>r.onchange=()=>{
