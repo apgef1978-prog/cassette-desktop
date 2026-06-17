@@ -34,7 +34,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name="Вкладыши",
+    name="Vkladyshi",   # ASCII: GitHub Release не принимает не-ASCII имена ассетов
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
