@@ -98,7 +98,8 @@ def scan_folder(folder):
     """Папка -> {'title', 'tracks':[{'name','dur'}], 'cover': data-url}.
 
     Треки сортируются по (диск, № трека); если номеров нет — натурально по имени
-    файла. title собирается как 'Исполнитель - Альбом (Год)' по самым частым тегам.
+    файла. title — имя папки. Если исполнитель у всех треков один, в названии
+    трека только песня; если разные — с префиксом 'Исполнитель - '.
     """
     folder = (folder or "").strip().rstrip("/\\")
     if not folder or not os.path.isdir(folder):
@@ -137,7 +138,8 @@ def scan_folder(folder):
         if cover_bytes is None:
             cover_bytes = _embedded_cover(audio, path)
 
-        entries.append({"disc": disc, "tno": tno, "fn": fn, "name": title, "dur": dur})
+        entries.append({"disc": disc, "tno": tno, "fn": fn, "name": title,
+                        "artist": artist, "dur": dur})
 
     if not entries:
         raise ValueError("в папке нет распознанных аудиофайлов")
@@ -156,16 +158,22 @@ def scan_folder(folder):
             except Exception:
                 cover_bytes = None
 
+    # Заголовок — имя папки (как просили), с запасным вариантом по тегам.
     top = lambda d: max(d, key=d.get) if d else ""
-    artist = top(artists)
-    album = top(albums) or os.path.basename(folder) or "Альбом"
-    year = top(years)
-    title = ("%s - %s" % (artist, album)) if artist else album
-    if year:
-        title = "%s (%s)" % (title, year)
+    title = os.path.basename(folder) or top(albums) or "Альбом"
+
+    # Если исполнитель у всех треков один — в названии трека только песня;
+    # если разные — префикс 'Исполнитель - '. Пустых исполнителей не считаем.
+    distinct_artists = {e["artist"] for e in entries if e["artist"]}
+    one_artist = len(distinct_artists) <= 1
+
+    def track_name(e):
+        if one_artist or not e["artist"]:
+            return e["name"]
+        return "%s - %s" % (e["artist"], e["name"])
 
     return {
         "title": title,
-        "tracks": [{"name": e["name"], "dur": M.fmt_dur(e["dur"])} for e in entries],
+        "tracks": [{"name": track_name(e), "dur": M.fmt_dur(e["dur"])} for e in entries],
         "cover": _cover_data_url(cover_bytes),
     }
