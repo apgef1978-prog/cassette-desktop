@@ -17,6 +17,16 @@ from app import app
 TITLE = "Вкладыши для аудиокассет"
 
 
+class Api:
+    """JS-мост: даёт фронтенду нативный диалог выбора папки с музыкой."""
+
+    def pick_folder(self):
+        res = webview.windows[0].create_file_dialog(webview.FOLDER_DIALOG)
+        if not res:
+            return ""
+        return res[0] if isinstance(res, (list, tuple)) else res
+
+
 def _free_port():
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
@@ -47,7 +57,8 @@ def main():
     threading.Thread(target=_run_flask, args=(port,), daemon=True).start()
     url = "http://127.0.0.1:%d/" % port
     _wait_until_up(url)
-    webview.create_window(TITLE, url, width=1100, height=860, min_size=(820, 600))
+    webview.create_window(TITLE, url, js_api=Api(),
+                          width=1100, height=860, min_size=(820, 600))
     webview.start()      # блокирует до закрытия окна; daemon-поток Flask умрёт сам
 
 

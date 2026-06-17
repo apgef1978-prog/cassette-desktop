@@ -2,7 +2,7 @@
 # Сборка одного .exe под Windows:  pyinstaller build.spec
 # (PyInstaller не кросс-компилит — запускать на Windows / windows-runner.)
 
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 block_cipher = None
 
@@ -10,13 +10,17 @@ block_cipher = None
 # pythonnet) и свои ресурсы — собираем их явно, иначе окно не поднимется.
 ws_datas, ws_binaries, ws_hidden = collect_all("webview")
 
+# mutagen.File подгружает парсеры форматов (mp3/flac/m4a/ogg…) отложенными
+# импортами — собираем все подмодули, иначе часть форматов не прочитается.
+mut_hidden = collect_submodules("mutagen")
+
 a = Analysis(
     ["main.py"],
     pathex=[],
     binaries=ws_binaries,
     # шаблон .docx кладём в корень бандла -> paths.resource_path("...") его найдёт
     datas=[("Шаблон_вкладыш_ЧИСТЫЙ.docx", ".")] + ws_datas,
-    hiddenimports=ws_hidden,
+    hiddenimports=ws_hidden + mut_hidden,
     hookspath=[],
     runtime_hooks=[],
     excludes=[],

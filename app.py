@@ -5,7 +5,7 @@
 Запуск:  ./.venv/bin/python app.py   →   http://<host>:8000/
 Источник треклистов/обложек: iTunes Search API (без токена, с длительностями).
 """
-import io, json, os, re, subprocess, sys, tempfile
+import base64, io, json, os, re, subprocess, sys, tempfile
 import requests
 from flask import (Flask, request, jsonify, send_from_directory,
                    render_template_string, abort)
@@ -274,6 +274,22 @@ def api_album():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route("/api/folder", methods=["POST"])
+def api_folder():
+    """Треклист/обложка из локальной папки с музыкой (десктоп). Путь приходит из
+    нативного диалога pywebview; читаем теги и длительности через mutagen."""
+    folder = (request.json or {}).get("folder", "").strip()
+    if not folder:
+        return jsonify({"error": "не выбрана папка"}), 400
+    try:
+        import folder_scan
+        d = folder_scan.scan_folder(folder)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+    for t in d.get("tracks", []):
+        t["name"] = clean_track_name(t.get("name", ""))
+    return jsonify(d)
+
 @app.route("/api/build", methods=["POST"])
 def api_build():
     title = request.form.get("title", "").strip()
@@ -299,6 +315,12 @@ def api_build():
         if f and f.filename:
             tmp_cover = tempfile.NamedTemporaryFile(delete=False, suffix=".img").name
             f.save(tmp_cover)
+        elif cover_url.startswith("data:"):
+            # обложка из папки приходит как data:image/...;base64,<...>
+            b64 = cover_url.split(",", 1)[1] if "," in cover_url else ""
+            tmp_cover = tempfile.NamedTemporaryFile(delete=False, suffix=".img").name
+            with open(tmp_cover, "wb") as fh:
+                fh.write(base64.b64decode(b64))
         elif cover_url:
             resp = requests.get(cover_url, headers=UA, timeout=20)
             resp.raise_for_status()
@@ -434,6 +456,12 @@ PAGE = r"""<!doctype html><html lang="ru"><head><meta charset="utf-8">
   </div>
   <div id="results" class="results"></div>
   <div id="searchErr" class="err"></div>
+  <div style="display:flex;align-items:center;gap:10px;margin:14px 0 6px;color:var(--mut);font-size:13px">
+    <span style="flex:1;height:1px;background:var(--line)"></span>или<span style="flex:1;height:1px;background:var(--line)"></span>
+  </div>
+  <button id="folderBtn" class="ghost" style="width:100%">📁 Взять из папки с музыкой</button>
+  <p class="muted" style="margin:6px 0 0">Названия, точные длительности и обложку прочитаем прямо из аудиофайлов.</p>
+  <div id="folderErr" class="err"></div>
 </div>
 
 <div class="card">
@@ -554,6 +582,28 @@ $("#searchBtn").onclick=()=>doSearch($("#q").value.trim(),$("#results"),$("#sear
     $("#searchErr").textContent=d.cover?"":"Обложка не найдена — загрузите свою.";
   }catch(e){$("#searchErr").textContent=e.message;}
 });
+
+// --- Из папки с музыкой (десктоп) ---
+async function pickFolder(){
+  if(window.pywebview && window.pywebview.api && window.pywebview.api.pick_folder){
+    return await window.pywebview.api.pick_folder();      // нативный диалог pywebview
+  }
+  return (prompt("Путь к папке с музыкой:")||"").trim();   // фолбэк в браузере
+}
+$("#folderBtn").onclick=async()=>{
+  const err=$("#folderErr"); err.textContent=""; const btn=$("#folderBtn");
+  let folder=""; try{folder=await pickFolder();}catch(e){err.textContent=e.message;return;}
+  if(!folder)return;
+  btn.disabled=true; btn.classList.add("spin"); const t0=btn.textContent; btn.textContent="Чтение папки…";
+  try{
+    const r=await fetch("/api/folder",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({folder})});
+    const d=await r.json(); if(d.error)throw new Error(d.error);
+    $("#title").value=d.title; coverUrl=d.cover||""; $("#cover").src=d.cover||"";
+    $("#tracklist").value=d.tracks.map(t=>`${t.name} | ${t.dur}`).join("\n");
+    err.textContent=d.cover?"":"Обложка в папке не найдена — загрузите свою.";
+  }catch(e){err.textContent=e.message;}
+  finally{btn.disabled=false;btn.classList.remove("spin");btn.textContent=t0;}
+};
 
 // --- Альбом 2 (Side B) ---
 $("#searchBtn2").onclick=()=>doSearch($("#q2").value.trim(),$("#results2"),$("#buildErr"),async(a,el)=>{
