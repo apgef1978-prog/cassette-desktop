@@ -41,26 +41,42 @@ def _first(tag, *keys):
     return ""
 
 
+def _fix_mojibake(s):
+    """Чинит русские теги, записанные в cp1251, но помеченные как ISO-8859-1
+    (mutagen честно декодирует их в латиницу → 'Ïåñíÿ' вместо 'Песня').
+    Перекодируем latin1->cp1251 только если результат преимущественно
+    кириллический — иначе настоящую латиницу ('Café') портить нельзя."""
+    if not s:
+        return s
+    try:
+        repaired = s.encode("latin1").decode("cp1251")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return s          # есть символы вне latin1 (уже корректный юникод) или не cp1251
+    cyr = sum("Ѐ" <= c <= "ӿ" for c in repaired)
+    alpha = sum(c.isalpha() for c in repaired)
+    return repaired if cyr and cyr >= alpha * 0.5 else s
+
+
 def _tag_first(easy, audio, *keys):
     """Сначала пробуем easy-теги (mp3/flac/m4a/ogg…), затем — ID3-фреймы из
-    самого файла (DSF/DSDIFF и прочее без easy-режима)."""
+    самого файла (DSF/DSDIFF и прочее без easy-режима). Результат прогоняем
+    через починку cp1251-as-latin1."""
     v = _first(easy, *keys)
-    if v:
-        return v
-    tags = getattr(audio, "tags", None)
-    if tags:
-        for k in keys:
-            fid = _ID3.get(k)
-            frame = tags.get(fid) if fid else None
-            if frame is None:
-                continue
-            try:
-                return str(frame.text[0]).strip()
-            except Exception:
-                s = str(frame).strip()
-                if s:
-                    return s
-    return ""
+    if not v:
+        tags = getattr(audio, "tags", None)
+        if tags:
+            for k in keys:
+                fid = _ID3.get(k)
+                frame = tags.get(fid) if fid else None
+                if frame is None:
+                    continue
+                try:
+                    v = str(frame.text[0]).strip()
+                except Exception:
+                    v = str(frame).strip()
+                if v:
+                    break
+    return _fix_mojibake(v)
 
 
 def _num(s):
@@ -179,10 +195,10 @@ def _cue_time(s):
 
 
 def _cue_value(s):
-    """Значение после команды: снимаем кавычки, если есть."""
+    """Значение после команды: снимаем кавычки, чиним возможную cp1251-мисметку."""
     s = s.strip()
     m = re.match(r'"(.*)"', s)
-    return m.group(1).strip() if m else s
+    return _fix_mojibake((m.group(1) if m else s).strip())
 
 
 def parse_cue(path):
