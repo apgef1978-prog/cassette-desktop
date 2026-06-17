@@ -124,16 +124,180 @@ def _cover_data_url(data):
     return "data:%s;base64,%s" % (mime, base64.b64encode(data).decode("ascii"))
 
 
+def _build_result(folder, entries, cover_bytes, album_fallback=""):
+    """entries (уже отсортированы): [{'name','artist','dur'(сек)}] -> итоговый dict.
+
+    Заголовок — имя папки. Имя трека: при одном исполнителе на всех — только
+    песня; при разных — 'Исполнитель - Песня' (пустые исполнители не считаем).
+    """
+    if cover_bytes is None:
+        cf = _folder_cover(folder)
+        if cf:
+            try:
+                with open(cf, "rb") as fh:
+                    cover_bytes = fh.read()
+            except Exception:
+                cover_bytes = None
+
+    title = os.path.basename(folder) or album_fallback or "Альбом"
+    distinct_artists = {e["artist"] for e in entries if e["artist"]}
+    one_artist = len(distinct_artists) <= 1
+
+    def track_name(e):
+        if one_artist or not e["artist"]:
+            return e["name"]
+        return "%s - %s" % (e["artist"], e["name"])
+
+    return {
+        "title": title,
+        "tracks": [{"name": track_name(e), "dur": M.fmt_dur(e["dur"])} for e in entries],
+        "cover": _cover_data_url(cover_bytes),
+    }
+
+
+# ---------------------------------------------------------------------------
+#  CUE-листы (треклист в текстовом файле рядом с образом FLAC/APE/WAV)
+# ---------------------------------------------------------------------------
+def _read_text(path):
+    """CUE бывают в UTF-8 (с BOM и без) и в cp1251 (русские релизы)."""
+    for enc in ("utf-8-sig", "cp1251", "utf-8"):
+        try:
+            with open(path, encoding=enc) as fh:
+                return fh.read()
+        except (UnicodeDecodeError, LookupError):
+            continue
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        return fh.read()
+
+
+def _cue_time(s):
+    """'mm:ss:ff' (ff — кадры, 75/с) -> секунды (float) или None."""
+    m = re.match(r"\s*(\d+):(\d+):(\d+)", str(s or ""))
+    if not m:
+        return None
+    return int(m.group(1)) * 60 + int(m.group(2)) + int(m.group(3)) / 75.0
+
+
+def _cue_value(s):
+    """Значение после команды: снимаем кавычки, если есть."""
+    s = s.strip()
+    m = re.match(r'"(.*)"', s)
+    return m.group(1).strip() if m else s
+
+
+def parse_cue(path):
+    """CUE -> (album_title, album_artist, [track]). До первого TRACK команды
+    относятся к альбому, после — к текущему треку.
+    track: {'no','title','artist','file','start'(сек)}."""
+    album_title = album_artist = cur_file = ""
+    tracks, cur = [], None
+    for raw in _read_text(path).splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        up = line.upper()
+        if up.startswith("FILE "):
+            m = re.match(r'FILE\s+"?(.*?)"?\s+\w+\s*$', line, re.I)
+            cur_file = m.group(1).strip() if m else ""
+        elif up.startswith("TRACK "):
+            parts = line.split()
+            cur = {"no": _num(parts[1]) if len(parts) > 1 else len(tracks) + 1,
+                   "title": "", "artist": "", "file": cur_file, "start": None}
+            tracks.append(cur)
+        elif up.startswith("TITLE "):
+            val = _cue_value(line[6:])
+            if cur is None:
+                album_title = val
+            else:
+                cur["title"] = val
+        elif up.startswith("PERFORMER "):
+            val = _cue_value(line[10:])
+            if cur is None:
+                album_artist = val
+            else:
+                cur["artist"] = val
+        elif up.startswith("INDEX ") and cur is not None:
+            parts = line.split()
+            if len(parts) >= 3:
+                idx, t = _num(parts[1]), _cue_time(parts[2])
+                # INDEX 01 — начало звука; INDEX 00 (pre-gap) берём лишь как запасной
+                if idx == 1 or cur["start"] is None:
+                    cur["start"] = t
+    return album_title, album_artist, tracks
+
+
+def _resolve(folder, name):
+    """Имя файла из CUE -> путь в папке (с учётом регистра/обратных слешей)."""
+    if not name:
+        return ""
+    name = name.replace("\\", "/").split("/")[-1]
+    p = os.path.join(folder, name)
+    if os.path.isfile(p):
+        return p
+    low = name.lower()
+    for f in os.listdir(folder):
+        if f.lower() == low:
+            return os.path.join(folder, f)
+    return ""
+
+
+def _scan_cue(folder, cue_path):
+    """Папка с CUE -> итоговый dict, либо None если разобрать не удалось."""
+    album_title, album_artist, tracks = parse_cue(cue_path)
+    if not tracks:
+        return None
+
+    # Длительности файлов-образов и обложка из первого существующего файла.
+    file_len, cover_bytes = {}, None
+    for t in tracks:
+        f = t["file"]
+        if f and f not in file_len:
+            fpath = _resolve(folder, f)
+            length = 0
+            if fpath:
+                try:
+                    au = MutagenFile(fpath)
+                    length = getattr(getattr(au, "info", None), "length", 0) or 0
+                    if cover_bytes is None:
+                        cover_bytes = _embedded_cover(au, fpath)
+                except Exception:
+                    length = 0
+            file_len[f] = length
+
+    entries, n = [], len(tracks)
+    for i, t in enumerate(tracks):
+        start = t["start"] or 0
+        nxt = tracks[i + 1] if i + 1 < n else None
+        if nxt and nxt["file"] == t["file"] and nxt["start"] is not None:
+            dur = (nxt["start"] or 0) - start          # внутри одного образа
+        else:
+            dur = (file_len.get(t["file"], 0) or 0) - start   # последний в файле
+        entries.append({
+            "name": t["title"] or ("Трек %02d" % t["no"]),
+            "artist": t["artist"] or album_artist,
+            "dur": int(round(dur)) if dur and dur > 0 else 0,
+        })
+    return _build_result(folder, entries, cover_bytes, album_title)
+
+
 def scan_folder(folder):
     """Папка -> {'title', 'tracks':[{'name','dur'}], 'cover': data-url}.
 
-    Треки сортируются по (диск, № трека); если номеров нет — натурально по имени
-    файла. title — имя папки. Если исполнитель у всех треков один, в названии
-    трека только песня; если разные — с префиксом 'Исполнитель - '.
+    Если в папке есть CUE-лист — треклист берём из него (часто рядом лежит один
+    образ FLAC/APE/WAV). Иначе сканируем аудиофайлы: сортировка по (диск, № трека),
+    при отсутствии номеров — натурально по имени файла. title — имя папки. При
+    одном исполнителе имя трека — только песня, при разных — 'Исполнитель - Песня'.
     """
     folder = (folder or "").strip().rstrip("/\\")
     if not folder or not os.path.isdir(folder):
         raise ValueError("папка не найдена")
+
+    cues = sorted(f for f in os.listdir(folder)
+                  if os.path.isfile(os.path.join(folder, f)) and f.lower().endswith(".cue"))
+    if cues:
+        res = _scan_cue(folder, os.path.join(folder, cues[0]))
+        if res:
+            return res
 
     entries, artists, albums, years = [], {}, {}, {}
     cover_bytes = None
@@ -178,31 +342,5 @@ def scan_folder(folder):
     else:
         entries.sort(key=lambda e: _natkey(e["fn"]))
 
-    if cover_bytes is None:
-        cf = _folder_cover(folder)
-        if cf:
-            try:
-                with open(cf, "rb") as fh:
-                    cover_bytes = fh.read()
-            except Exception:
-                cover_bytes = None
-
-    # Заголовок — имя папки (как просили), с запасным вариантом по тегам.
     top = lambda d: max(d, key=d.get) if d else ""
-    title = os.path.basename(folder) or top(albums) or "Альбом"
-
-    # Если исполнитель у всех треков один — в названии трека только песня;
-    # если разные — префикс 'Исполнитель - '. Пустых исполнителей не считаем.
-    distinct_artists = {e["artist"] for e in entries if e["artist"]}
-    one_artist = len(distinct_artists) <= 1
-
-    def track_name(e):
-        if one_artist or not e["artist"]:
-            return e["name"]
-        return "%s - %s" % (e["artist"], e["name"])
-
-    return {
-        "title": title,
-        "tracks": [{"name": track_name(e), "dur": M.fmt_dur(e["dur"])} for e in entries],
-        "cover": _cover_data_url(cover_bytes),
-    }
+    return _build_result(folder, entries, cover_bytes, top(albums))
