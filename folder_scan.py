@@ -16,10 +16,18 @@ from mutagen import File as MutagenFile
 import make_insert as M
 
 AUDIO_EXTS = (".mp3", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wma",
-              ".wav", ".aiff", ".aif", ".ape", ".wv")
+              ".wav", ".aiff", ".aif", ".ape", ".wv",
+              ".dsf", ".dff")  # DSD: Sony DSF и Philips DSDIFF (mutagen 1.47+)
 IMG_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
 # характерные имена файлов-обложек рядом с треками
 COVER_STEMS = ("cover", "folder", "front", "albumart", "album", "обложка")
+
+
+# Соответствие easy-ключей ID3-фреймам — для форматов без easy-режима (DSF/DSDIFF),
+# где теги приходят «сырым» ID3 (TIT2/TPE1/...), а не как title/artist.
+_ID3 = {"title": "TIT2", "artist": "TPE1", "albumartist": "TPE2", "album": "TALB",
+        "composer": "TCOM", "date": "TDRC", "originaldate": "TDOR", "year": "TYER",
+        "discnumber": "TPOS", "tracknumber": "TRCK"}
 
 
 def _first(tag, *keys):
@@ -30,6 +38,28 @@ def _first(tag, *keys):
         v = tag.get(k)
         if v:
             return str(v[0] if isinstance(v, (list, tuple)) else v).strip()
+    return ""
+
+
+def _tag_first(easy, audio, *keys):
+    """Сначала пробуем easy-теги (mp3/flac/m4a/ogg…), затем — ID3-фреймы из
+    самого файла (DSF/DSDIFF и прочее без easy-режима)."""
+    v = _first(easy, *keys)
+    if v:
+        return v
+    tags = getattr(audio, "tags", None)
+    if tags:
+        for k in keys:
+            fid = _ID3.get(k)
+            frame = tags.get(fid) if fid else None
+            if frame is None:
+                continue
+            try:
+                return str(frame.text[0]).strip()
+            except Exception:
+                s = str(frame).strip()
+                if s:
+                    return s
     return ""
 
 
@@ -119,15 +149,14 @@ def scan_folder(folder):
             continue
         if audio is None:
             continue
-        tag = easy if easy is not None else audio
 
         dur = int(round(getattr(getattr(audio, "info", None), "length", 0) or 0))
-        title = _first(tag, "title") or _strip_leading_num(os.path.splitext(fn)[0])
-        artist = _first(tag, "albumartist", "artist", "composer")
-        album = _first(tag, "album")
-        year = _year(_first(tag, "date", "originaldate", "year"))
-        disc = _num(_first(tag, "discnumber")) or 1
-        tno = _num(_first(tag, "tracknumber"))
+        title = _tag_first(easy, audio, "title") or _strip_leading_num(os.path.splitext(fn)[0])
+        artist = _tag_first(easy, audio, "albumartist", "artist", "composer")
+        album = _tag_first(easy, audio, "album")
+        year = _year(_tag_first(easy, audio, "date", "originaldate", "year"))
+        disc = _num(_tag_first(easy, audio, "discnumber")) or 1
+        tno = _num(_tag_first(easy, audio, "tracknumber"))
 
         if artist:
             artists[artist] = artists.get(artist, 0) + 1
