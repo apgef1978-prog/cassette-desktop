@@ -1,0 +1,20 @@
+[
+  {"name": "Шаблон по умолчанию", "minutes": 47,
+   "height_mm": 100, "front_mm": 65, "spine_mm": 11, "flap_mm": 20,
+   "note": "Геометрия исходного шаблона, проверена печатью"},
+  {"name": "TDK D90 / SA90", "minutes": 47,
+   "height_mm": 100, "front_mm": 65, "spine_mm": 11, "flap_mm": 20,
+   "note": "135 м ленты -> ~47 мин/сторона (tapeheads). Размеры вкладыша не замерены"},
+  {"name": "Sony / Maxell C90", "minutes": 47,
+   "height_mm": 100, "front_mm": 65, "spine_mm": 11, "flap_mm": 20,
+   "note": "135 м ленты -> ~47 мин/сторона (tapeheads). Размеры вкладыша не замерены"},
+  {"name": "BASF C90", "minutes": 46,
+   "height_mm": 100, "front_mm": 65, "spine_mm": 11, "flap_mm": 20,
+   "note": "132 м ленты -> ~46 мин/сторона (tapeheads). Размеры вкладыша не замерены"},
+  {"name": "C60 (номинал)", "minutes": 30,
+   "height_mm": 100, "front_mm": 65, "spine_mm": 11, "flap_mm": 20,
+   "note": "Номинальные 30 мин, реальный запас не замерен"},
+  {"name": "Стандарт J-card (Norelco)", "minutes": 47,
+   "height_mm": 101.6, "front_mm": 65.1, "spine_mm": 12.7, "flap_mm": 25.4,
+   "note": "Отраслевой стандарт J-card (Wikipedia: J-card)"}
+]

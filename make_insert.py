@@ -82,14 +82,15 @@ def distribute_mix(tracks_a, tracks_b, limit_min=47):
             "carry": carry, "album1_full": album1_full,
             "total_a": sum(s for _, s in tracks_a), "total_b": sum(s for _, s in tracks_b)}
 
-def auto_sz(side_a, side_b, sizes=(22, 20, 18, 16, 14)):
+def auto_sz(side_a, side_b, sizes=(22, 20, 18, 16, 14), height_mm=100):
     """Эвристика выбора sz (LibreOffice-рендер недоступен). Калибровка по эталону
     Bon Jovi: 22 строки треков + 2 заголовка(12pt) помещаются при 8pt.
-    Ёмкость ~ 192 pt высоты под треки. Возвращает крупнейший sz из списка, влезающий."""
+    Ёмкость ~ 192 pt высоты под треки при высоте вкладыша 100 мм (масштабируется).
+    Возвращает крупнейший sz из списка, влезающий."""
     lines = len(side_a) + len(side_b)
     if lines == 0:
         return sizes[0]
-    max_pt = 192.0 / lines
+    max_pt = 192.0 * height_mm / 100 / lines
     for sz in sizes:               # от крупного к мелкому
         if sz / 2.0 <= max_pt:
             return sz
@@ -178,9 +179,30 @@ def _replace_cell_inner(xml, marker, inner):
     new_cell = cell[:tcpr_end] + inner + "</w:tc>"
     return xml[:tc_start] + new_cell + xml[tc_end:]
 
-def make_docx(out_path, title_lines, header_a, header_b, side_a, side_b, sz, cover_src):
+def apply_geom(xml, g):
+    """Размеры развёртки под конкретную кассету (мм) -> значения в шаблоне.
+    Шаблон: корешок = полоса заголовка (длина height x ширина spine), лицевая
+    панель и оборот = front x height, клапан = flap. Квадрат обложки = панель
+    минус 4,7 мм, по центру по вертикали (как в исходном шаблоне)."""
+    tw = lambda mm: str(int(round(mm * 1440 / 25.4)))
+    emu = lambda mm: str(int(round(mm * 36000)))
+    h, w = g["height_mm"], g["front_mm"]
+    side = min(w, h) - 4.7
+    for old, new in (('w:w="5670"', 'w:w="%s"' % tw(h)),
+                     ('w:val="5670"', 'w:val="%s"' % tw(h)),
+                     ('w:w="3686"', 'w:w="%s"' % tw(w)),
+                     ('w:w="1134"', 'w:w="%s"' % tw(g["flap_mm"])),
+                     ('<w:trHeight w:val="624"/>', '<w:trHeight w:val="%s"/>' % tw(g["spine_mm"])),
+                     ('"2171700"', '"%s"' % emu(side)),
+                     ('>655320<', '>%s<' % emu((h - side) / 2 - 1.65))):
+        xml = xml.replace(old, new)
+    return xml
+
+def make_docx(out_path, title_lines, header_a, header_b, side_a, side_b, sz, cover_src,
+              geom=None):
     """title_lines — список строк заголовка (1 — один альбом, 2 — микстейп).
-    header_a/header_b — текст после 'Side A:'/'Side B:'. side_a/side_b — имена треков."""
+    header_a/header_b — текст после 'Side A:'/'Side B:'. side_a/side_b — имена треков.
+    geom — размеры кассеты в мм (см. apply_geom); None — как в шаблоне."""
     if isinstance(title_lines, str):
         title_lines = [title_lines]
     work = tempfile.mkdtemp(prefix="cassette_build_")
@@ -195,6 +217,8 @@ def make_docx(out_path, title_lines, header_a, header_b, side_a, side_b, sz, cov
     # 2) Левая ячейка Table 2 — треклист
     xml = _replace_cell_inner(xml, "Side A:",
                               build_cell_inner(header_a, header_b, side_a, side_b, sz))
+    if geom:
+        xml = apply_geom(xml, geom)
 
     open(docxml_path, "w", encoding="utf-8").write(xml)
 

@@ -11,7 +11,7 @@ from flask import (Flask, request, jsonify, send_from_directory,
                    render_template_string, abort)
 
 import make_insert as M
-from paths import output_dir
+from paths import output_dir, user_copy
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = output_dir()
@@ -252,7 +252,35 @@ def parse_tracklist(text):
             out.append((name, M.parse_dur(dur)))
     return out
 
+GEOM_KEYS = ("height_mm", "front_mm", "spine_mm", "flap_mm")
+
+def load_cassettes():
+    """Пресеты кассет из «Документы\\Кассетные вкладыши\\cassettes.json» (правится
+    руками, читается при каждом запросе). Битые записи пропускаем."""
+    with open(user_copy("cassettes.json"), encoding="utf-8") as fh:
+        raw = json.load(fh)
+    out = []
+    for c in raw:
+        try:
+            item = {"name": str(c["name"]), "minutes": float(c["minutes"]),
+                    "note": str(c.get("note", ""))}
+            for k in GEOM_KEYS:
+                item[k] = float(c[k])
+                if not 5 <= item[k] <= 300:
+                    raise ValueError(k)
+            out.append(item)
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
+
 # ---------------------------------------------------------------------------
+@app.route("/api/cassettes")
+def api_cassettes():
+    try:
+        return jsonify({"cassettes": load_cassettes()})
+    except Exception as e:
+        return jsonify({"error": "cassettes.json: %s" % e}), 500
+
 @app.route("/api/search", methods=["POST"])
 def api_search():
     q = (request.json or {}).get("query", "").strip()
@@ -301,6 +329,11 @@ def api_build():
     title_mode = request.form.get("title_mode", "first")       # first | both
     title2 = request.form.get("title2", "").strip()
     tracks2 = parse_tracklist(request.form.get("tracklist2", ""))
+    cname = request.form.get("cassette", "")
+    try:
+        geom = next((c for c in load_cassettes() if c["name"] == cname), None) if cname else None
+    except Exception as e:
+        return jsonify({"error": "cassettes.json: %s" % e}), 400
     if not title:
         return jsonify({"error": "укажите название"}), 400
     if not tracks:
@@ -350,13 +383,14 @@ def api_build():
             if artist1 and carry_fit:
                 names_b = [("%s - %s" % (artist1, n)) if i < carry_fit else n
                            for i, n in enumerate(names_b)]
-        sz = M.auto_sz(names_a, names_b) if sizemode == "auto" else int(sizemode)
+        sz = (M.auto_sz(names_a, names_b, height_mm=geom["height_mm"] if geom else 100)
+              if sizemode == "auto" else int(sizemode))
 
         base = slug(title) + ("__" + slug(title2) if sideb_mode == "other" and title2 else "")
         docx_name = base + ".docx"
         cover_name = base + "_cover.jpg"
         M.make_docx(os.path.join(OUT, docx_name), title_lines, header_a, header_b,
-                    names_a, names_b, sz, tmp_cover)
+                    names_a, names_b, sz, tmp_cover, geom)
         M.prepare_cover(tmp_cover, os.path.join(OUT, cover_name))
     finally:
         if tmp_cover and os.path.exists(tmp_cover):
@@ -475,6 +509,9 @@ PAGE = r"""<!doctype html><html lang="ru"><head><meta charset="utf-8">
     <div>
       <label>Название (Исполнитель - Альбом (Год))</label>
       <input id="title" placeholder="Натали - Ветер с моря дул (1998)">
+      <label>Кассета</label>
+      <select id="cassette"><option value="">Как в шаблоне</option></select>
+      <div id="cassetteNote" class="muted"></div>
       <div class="row">
         <div><label>Лимит, мин/сторона</label><input id="limit" type="number" value="47" min="1" step="1"></div>
         <div><label>Шрифт треков</label>
@@ -541,6 +578,7 @@ PAGE = r"""<!doctype html><html lang="ru"><head><meta charset="utf-8">
         <div class="side"><h3>Side B <span id="bDur" class="muted"></span></h3><ol id="sideB"></ol></div>
       </div>
       <button id="openDir" class="dl" style="border:0;cursor:pointer">📂 Открыть папку с вкладышем</button>
+      <a id="dlDocx" class="dl" href="#" download>⬇ Скачать .docx</a>
       <div id="savedPath" class="muted" style="margin-top:10px"></div>
       <p class="muted" style="margin-top:8px">Файл сохраняется автоматически. Размер шрифта подбирается эвристикой — проверьте в Word, что вкладыш на 1 страницу.</p>
     </div>
@@ -629,6 +667,20 @@ document.querySelectorAll('input[name="sbmode"]').forEach(r=>r.onchange=()=>{
   $("#album2box").style.display=(document.querySelector('input[name="sbmode"]:checked').value==="other")?"block":"none";
 });
 
+// Пресеты кассет: выбор подставляет лимит минут; размеры применит сервер.
+let CASS=[];
+fetch("/api/cassettes").then(r=>r.json()).then(d=>{
+  if(d.error){$("#cassetteNote").textContent=d.error;return;}
+  CASS=d.cassettes;
+  CASS.forEach(c=>{const o=document.createElement("option");o.value=o.textContent=c.name;$("#cassette").appendChild(o);});
+});
+$("#cassette").onchange=()=>{
+  const c=CASS.find(c=>c.name===$("#cassette").value);
+  if(!c){$("#cassetteNote").textContent="";return;}
+  $("#limit").value=c.minutes;
+  $("#cassetteNote").textContent=`${c.minutes} мин/сторона · вкладыш ${c.height_mm}×${c.front_mm} мм, корешок ${c.spine_mm}, клапан ${c.flap_mm}`+(c.note?` — ${c.note}`:"");
+};
+
 $("#coverFile").onchange=e=>{const f=e.target.files[0]; if(f)$("#cover").src=URL.createObjectURL(f);};
 
 $("#openDir").onclick=async()=>{
@@ -646,6 +698,7 @@ $("#buildBtn").onclick=async()=>{
     const fd=new FormData();
     fd.append("title",$("#title").value);
     fd.append("limit",$("#limit").value);
+    fd.append("cassette",$("#cassette").value);
     fd.append("size",$("#size").value);
     fd.append("tracklist",$("#tracklist").value);
     fd.append("cover_url",coverUrl);
@@ -667,6 +720,7 @@ $("#buildBtn").onclick=async()=>{
     fill($("#sideA"),d.side_a); fill($("#sideB"),d.side_b);
     $("#pvCover").src=d.cover+"?t="+Date.now();
     $("#savedPath").textContent="Сохранено: "+d.docx_path;
+    $("#dlDocx").href=d.docx;
     $("#preview").style.display="block";
     $("#preview").scrollIntoView({behavior:"smooth"});
   }catch(e){$("#buildErr").textContent=e.message;}

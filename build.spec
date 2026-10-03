@@ -19,7 +19,7 @@ a = Analysis(
     pathex=[],
     binaries=ws_binaries,
     # шаблон .docx кладём в корень бандла -> paths.resource_path("...") его найдёт
-    datas=[("Шаблон_вкладыш_ЧИСТЫЙ.docx", ".")] + ws_datas,
+    datas=[("Шаблон_вкладыш_ЧИСТЫЙ.docx", "."), ("cassettes.json", ".")] + ws_datas,
     hiddenimports=ws_hidden + mut_hidden,
     hookspath=[],
     runtime_hooks=[],

@@ -8,6 +8,7 @@
 может быть недоступен на запись).
 """
 import os
+import shutil
 import sys
 
 
@@ -26,3 +27,12 @@ def output_dir():
     d = os.path.join(docs, "Кассетные вкладыши")
     os.makedirs(d, exist_ok=True)
     return d
+
+
+def user_copy(name):
+    """Редактируемая копия упакованного файла в папке вывода (создаётся при
+    первом обращении) — чтобы правки не требовали пересборки .exe."""
+    dst = os.path.join(output_dir(), name)
+    if not os.path.exists(dst):
+        shutil.copyfile(resource_path(name), dst)
+    return dst
