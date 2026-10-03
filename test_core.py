@@ -25,6 +25,16 @@ def test_geom():
     assert 'w:top="1134"' in s                      # поля страницы не трогаем
 
 
+def test_whole():
+    g = {"height_mm": 101.6, "front_mm": 65.1, "spine_mm": 12.7, "flap_mm": 25.4}
+    x = M.whole_layout(M.apply_geom(tpl_xml(), g), g, M.build_title_inner(["A - B (1990)"]),
+                       M.build_cell_inner("h", "h", ["s1"], ["s2"], 18))
+    assert x.count("<w:tbl>") == 1 and x.count("<w:tc>") == 3
+    assert '<w:gridCol w:w="3691"/><w:gridCol w:w="720"/><w:gridCol w:w="3691"/>' in x
+    assert 'btLr' in x and "<w:drawing>" in x and "A - B (1990)" in x and "<w:sectPr" in x
+    import xml.dom.minidom; xml.dom.minidom.parseString(x)
+
+
 def test_distribute():
     t = [("T%d" % i, 300) for i in range(1, 13)]   # 12 x 5 мин
     d = M.distribute(t, 47)
@@ -33,5 +43,5 @@ def test_distribute():
 
 
 if __name__ == "__main__":
-    test_geom(); test_distribute()
+    test_geom(); test_whole(); test_distribute()
     print("ok")

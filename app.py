@@ -254,22 +254,33 @@ def parse_tracklist(text):
 
 GEOM_KEYS = ("height_mm", "front_mm", "spine_mm", "flap_mm")
 
+def parse_cassette(c):
+    """Запись пресета -> чистый dict; ValueError с понятным текстом, если битая."""
+    try:
+        item = {"name": str(c["name"]).strip(), "minutes": float(c["minutes"]),
+                "note": str(c.get("note") or "").strip()}
+        for k in GEOM_KEYS:
+            item[k] = float(c[k])
+    except (KeyError, TypeError, ValueError):
+        raise ValueError("«%s»: заполните все поля числами" % (c.get("name") if isinstance(c, dict) else c))
+    if not item["name"]:
+        raise ValueError("у кассеты пустое название")
+    if not 1 <= item["minutes"] <= 120:
+        raise ValueError("«%s»: минуты на сторону — от 1 до 120" % item["name"])
+    if not all(1 <= item[k] <= 300 for k in GEOM_KEYS):
+        raise ValueError("«%s»: размеры — от 1 до 300 мм" % item["name"])
+    return item
+
 def load_cassettes():
     """Пресеты кассет из «Документы\\Кассетные вкладыши\\cassettes.json» (правится
-    руками, читается при каждом запросе). Битые записи пропускаем."""
+    в программе или руками, читается при каждом запросе). Битые записи пропускаем."""
     with open(user_copy("cassettes.json"), encoding="utf-8") as fh:
         raw = json.load(fh)
     out = []
     for c in raw:
         try:
-            item = {"name": str(c["name"]), "minutes": float(c["minutes"]),
-                    "note": str(c.get("note", ""))}
-            for k in GEOM_KEYS:
-                item[k] = float(c[k])
-                if not 5 <= item[k] <= 300:
-                    raise ValueError(k)
-            out.append(item)
-        except (KeyError, TypeError, ValueError):
+            out.append(parse_cassette(c))
+        except ValueError:
             continue
     return out
 
@@ -280,6 +291,27 @@ def api_cassettes():
         return jsonify({"cassettes": load_cassettes()})
     except Exception as e:
         return jsonify({"error": "cassettes.json: %s" % e}), 500
+
+@app.route("/api/cassettes", methods=["POST"])
+def api_cassettes_save():
+    """Сохранить весь список кассет из редактора. Битый список не пишем."""
+    raw = (request.json or {}).get("cassettes")
+    if not isinstance(raw, list):
+        return jsonify({"error": "нет списка кассет"}), 400
+    try:
+        items = [parse_cassette(c) for c in raw]
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    names = [c["name"] for c in items]
+    dup = next((n for n in names if names.count(n) > 1), None)
+    if dup:
+        return jsonify({"error": "две кассеты с названием «%s»" % dup}), 400
+    path = user_copy("cassettes.json")
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(items, fh, ensure_ascii=False, indent=1)
+    os.replace(tmp, path)                  # атомарно: не оставим полузаписанный файл
+    return jsonify({"cassettes": items})
 
 @app.route("/api/search", methods=["POST"])
 def api_search():
@@ -390,7 +422,8 @@ def api_build():
         docx_name = base + ".docx"
         cover_name = base + "_cover.jpg"
         M.make_docx(os.path.join(OUT, docx_name), title_lines, header_a, header_b,
-                    names_a, names_b, sz, tmp_cover, geom)
+                    names_a, names_b, sz, tmp_cover, geom,
+                    whole=request.form.get("layout") == "whole")
         M.prepare_cover(tmp_cover, os.path.join(OUT, cover_name))
     finally:
         if tmp_cover and os.path.exists(tmp_cover):
@@ -478,6 +511,8 @@ PAGE = r"""<!doctype html><html lang="ru"><head><meta charset="utf-8">
   a.dl{display:inline-block;margin-top:14px;background:#7ee0a0;color:#08220f;padding:11px 18px;
     border-radius:8px;text-decoration:none;font-weight:700}
   .spin{opacity:.6}
+  table.cass{border-collapse:collapse;width:100%} table.cass th{font-size:12px;color:var(--mut);font-weight:400;text-align:left;padding:0 4px 4px}
+  table.cass td{padding:2px 4px} table.cass input{padding:6px 8px;min-width:60px} table.cass td:first-child input{min-width:170px}
 </style></head><body><div class="wrap">
 <h1>🎙️ Вкладыши для аудиокассет</h1>
 <p class="sub">Поиск треклиста и обложки, распределение по сторонам, генерация .docx по шаблону.</p>
@@ -510,8 +545,16 @@ PAGE = r"""<!doctype html><html lang="ru"><head><meta charset="utf-8">
       <label>Название (Исполнитель - Альбом (Год))</label>
       <input id="title" placeholder="Натали - Ветер с моря дул (1998)">
       <label>Кассета</label>
-      <select id="cassette"><option value="">Как в шаблоне</option></select>
+      <div class="row" style="align-items:center">
+        <select id="cassette" style="flex:3"><option value="">Как в шаблоне</option></select>
+        <button id="cassEditBtn" class="ghost" style="flex:0 0 auto">✎ Мои кассеты</button>
+      </div>
       <div id="cassetteNote" class="muted"></div>
+      <label>Макет</label>
+      <select id="layout">
+        <option value="parts">Раздельные части (торец, обложка, треклист — отдельно)</option>
+        <option value="whole">Вкладыш целиком (обложка + торец + треклист одной полосой)</option>
+      </select>
       <div class="row">
         <div><label>Лимит, мин/сторона</label><input id="limit" type="number" value="47" min="1" step="1"></div>
         <div><label>Шрифт треков</label>
@@ -527,6 +570,21 @@ PAGE = r"""<!doctype html><html lang="ru"><head><meta charset="utf-8">
       <textarea id="tracklist" placeholder="Ветер с моря дул | 3:45&#10;Посвящение друзьям | 3:37"></textarea>
     </div>
   </div>
+</div>
+
+<div id="cassEditor" class="card" style="display:none">
+  <h2 style="margin:0 0 6px">Мои кассеты</h2>
+  <p class="muted" style="margin:0 0 10px">Размеры в мм: высота вкладыша, ширина лицевой стороны (с обложкой), торца и клапана. Время — минут на одну сторону.</p>
+  <div style="overflow-x:auto">
+    <table class="cass"><thead><tr><th>Название</th><th>Мин/сторона</th><th>Высота</th><th>Лицевая</th><th>Торец</th><th>Клапан</th><th>Заметка</th><th></th></tr></thead>
+    <tbody id="cassRows"></tbody></table>
+  </div>
+  <div class="row" style="margin-top:10px">
+    <button id="cassAdd" class="ghost" style="flex:0 0 auto">+ Добавить кассету</button>
+    <button id="cassSave" style="flex:0 0 auto">Сохранить</button>
+    <button id="cassCancel" class="ghost" style="flex:0 0 auto">Отмена</button>
+  </div>
+  <div id="cassErr" class="err"></div>
 </div>
 
 <div class="card">
@@ -669,11 +727,51 @@ document.querySelectorAll('input[name="sbmode"]').forEach(r=>r.onchange=()=>{
 
 // Пресеты кассет: выбор подставляет лимит минут; размеры применит сервер.
 let CASS=[];
+function fillCassettes(list){
+  const sel=$("#cassette"), cur=sel.value;
+  CASS=list; sel.length=1;               // оставляем «Как в шаблоне»
+  CASS.forEach(c=>{const o=document.createElement("option");o.value=o.textContent=c.name;sel.appendChild(o);});
+  sel.value=CASS.some(c=>c.name===cur)?cur:""; sel.onchange();
+}
 fetch("/api/cassettes").then(r=>r.json()).then(d=>{
   if(d.error){$("#cassetteNote").textContent=d.error;return;}
-  CASS=d.cassettes;
-  CASS.forEach(c=>{const o=document.createElement("option");o.value=o.textContent=c.name;$("#cassette").appendChild(o);});
+  fillCassettes(d.cassettes);
 });
+
+// Редактор «Мои кассеты»: строки с полями, сохранение всего списка разом.
+const CFIELDS=[["name","text"],["minutes","number"],["height_mm","number"],["front_mm","number"],["spine_mm","number"],["flap_mm","number"],["note","text"]];
+function cassRow(c){
+  const tr=document.createElement("tr");
+  CFIELDS.forEach(([k,type])=>{
+    const td=document.createElement("td"), inp=document.createElement("input");
+    inp.type=type; inp.dataset.k=k; inp.value=c[k]??""; if(type==="number"){inp.step="0.1";inp.min="0";}
+    td.appendChild(inp); tr.appendChild(td);
+  });
+  const td=document.createElement("td"), del=document.createElement("button");
+  del.className="ghost"; del.textContent="✕"; del.title="Удалить"; del.onclick=()=>tr.remove();
+  td.appendChild(del); tr.appendChild(td); return tr;
+}
+function openEditor(){
+  $("#cassErr").textContent=""; const tb=$("#cassRows"); tb.innerHTML="";
+  CASS.forEach(c=>tb.appendChild(cassRow(c)));
+  $("#cassEditor").style.display="block"; $("#cassEditor").scrollIntoView({behavior:"smooth"});
+}
+$("#cassEditBtn").onclick=openEditor;
+$("#cassCancel").onclick=()=>{$("#cassEditor").style.display="none";};
+$("#cassAdd").onclick=()=>{
+  const r=cassRow({name:"",minutes:47,height_mm:100,front_mm:65,spine_mm:11,flap_mm:20,note:""});
+  $("#cassRows").appendChild(r); r.querySelector("input").focus();
+};
+$("#cassSave").onclick=async()=>{
+  $("#cassErr").textContent="";
+  const list=[...$("#cassRows").children].map(tr=>{
+    const c={}; tr.querySelectorAll("input").forEach(i=>c[i.dataset.k]=i.value.trim()); return c;});
+  try{
+    const r=await fetch("/api/cassettes",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({cassettes:list})});
+    const d=await r.json(); if(d.error)throw new Error(d.error);
+    fillCassettes(d.cassettes); $("#cassEditor").style.display="none";
+  }catch(e){$("#cassErr").textContent=e.message;}
+};
 $("#cassette").onchange=()=>{
   const c=CASS.find(c=>c.name===$("#cassette").value);
   if(!c){$("#cassetteNote").textContent="";return;}
@@ -699,6 +797,7 @@ $("#buildBtn").onclick=async()=>{
     fd.append("title",$("#title").value);
     fd.append("limit",$("#limit").value);
     fd.append("cassette",$("#cassette").value);
+    fd.append("layout",$("#layout").value);
     fd.append("size",$("#size").value);
     fd.append("tracklist",$("#tracklist").value);
     fd.append("cover_url",coverUrl);
