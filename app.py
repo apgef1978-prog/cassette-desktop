@@ -25,6 +25,15 @@ def slug(s):
     s = re.sub(r"[^\w\-]+", "_", s, flags=re.U).strip("_")
     return s or "insert"
 
+def unique_base(base):
+    """Имя без перезаписи прежних вкладышей: base, base_2, base_3, …"""
+    name, n = base, 1
+    while (os.path.exists(os.path.join(OUT, name + ".docx"))
+           or os.path.exists(os.path.join(OUT, name + "_cover.jpg"))):
+        n += 1
+        name = "%s_%d" % (base, n)
+    return name
+
 def _get(url, **kw):
     kw.setdefault("headers", UA); kw.setdefault("timeout", 25)
     return requests.get(url, **kw)
@@ -439,14 +448,15 @@ def api_build():
         sz = (M.auto_sz(names_a, names_b, height_mm=geom["height_mm"] if geom else 100)
               if sizemode == "auto" else int(sizemode))
 
-        base = slug(title) + ("__" + slug(title2) if sideb_mode == "other" and title2 else "")
+        base = unique_base(slug(title) + ("__" + slug(title2) if sideb_mode == "other" and title2 else ""))
         docx_name = base + ".docx"
         cover_name = base + "_cover.jpg"
         M.make_docx(os.path.join(OUT, docx_name), title_lines, header_a, header_b,
                     names_a, names_b, sz, tmp_cover, geom,
                     whole=request.form.get("layout") == "whole",
                     spine_font=font_arg("spine_font"), spine_sz=size_arg("spine_size"),
-                    track_font=font_arg("track_font"), front_title=title)
+                    track_font=font_arg("track_font"), front_title=title,
+                    front_font=font_arg("front_font"), front_sz=size_arg("front_size"))
         if tmp_cover:
             M.prepare_cover(tmp_cover, os.path.join(OUT, cover_name))
     finally:
@@ -584,7 +594,9 @@ PAGE = r"""<!doctype html><html lang="ru"><head><meta charset="utf-8">
         <div><label>Лимит, мин/сторона</label><input id="limit" type="number" value="47" min="1" step="1"></div>
       </div>
       <div class="row">
-        <div><label>Шрифт торца</label><input id="spineFont" list="fonts" placeholder="Monotype Corsiva"></div>
+        <div><label>Шрифт торца</label>
+          <select id="spineFont" class="fontSel" data-def="Как в шаблоне (Monotype Corsiva)"></select>
+          <input id="spineFontCustom" placeholder="Название шрифта, как в Word" style="display:none;margin-top:6px"></div>
         <div><label>Размер торца</label>
           <select id="spineSize">
             <option value="auto">Авто (14 / 12 pt)</option>
@@ -594,7 +606,9 @@ PAGE = r"""<!doctype html><html lang="ru"><head><meta charset="utf-8">
         </div>
       </div>
       <div class="row">
-        <div><label>Шрифт треклиста</label><input id="trackFont" list="fonts" placeholder="Monotype Corsiva"></div>
+        <div><label>Шрифт треклиста</label>
+          <select id="trackFont" class="fontSel" data-def="Как в шаблоне (Monotype Corsiva)"></select>
+          <input id="trackFontCustom" placeholder="Название шрифта, как в Word" style="display:none;margin-top:6px"></div>
         <div><label>Размер треков</label>
           <select id="size">
             <option value="auto">Авто (по эталону)</option>
@@ -605,13 +619,20 @@ PAGE = r"""<!doctype html><html lang="ru"><head><meta charset="utf-8">
           </select>
         </div>
       </div>
-      <datalist id="fonts">
-        <option>Monotype Corsiva</option><option>Times New Roman</option><option>Arial</option>
-        <option>Arial Narrow</option><option>Calibri</option><option>Cambria</option><option>Georgia</option>
-        <option>Verdana</option><option>Tahoma</option><option>Segoe UI</option><option>Segoe Script</option>
-        <option>Courier New</option><option>Comic Sans MS</option><option>Impact</option><option>Garamond</option>
-      </datalist>
-      <p class="muted" style="margin:4px 0 0">Шрифт можно выбрать из списка или вписать любой, установленный в Windows. Пусто — как в шаблоне.</p>
+      <div class="row">
+        <div><label>Шрифт лицевой (если нет картинки)</label>
+          <select id="frontFont" class="fontSel" data-def="Как у торца"></select>
+          <input id="frontFontCustom" placeholder="Название шрифта, как в Word" style="display:none;margin-top:6px"></div>
+        <div><label>Размер лицевой (если нет картинки)</label>
+          <select id="frontSize">
+            <option value="auto">Авто (максимальный)</option>
+            <option>48</option><option>40</option><option>36</option><option>32</option><option>28</option>
+            <option>24</option><option>20</option><option>18</option><option>16</option><option>14</option>
+            <option>12</option><option>10</option>
+          </select>
+        </div>
+      </div>
+      <p class="muted" style="margin:4px 0 0">«Другой шрифт…» — вписать любой, установленный в Windows.</p>
       <label>Треклист — по строке на трек: <code>Название | M:SS</code></label>
       <textarea id="tracklist" placeholder="Ветер с моря дул | 3:45&#10;Посвящение друзьям | 3:37"></textarea>
     </div>
@@ -771,6 +792,16 @@ document.querySelectorAll('input[name="sbmode"]').forEach(r=>r.onchange=()=>{
   $("#album2box").style.display=(document.querySelector('input[name="sbmode"]:checked').value==="other")?"block":"none";
 });
 
+// Выбор шрифта: первый пункт — по умолчанию (пусто), «Другой шрифт…» открывает поле ввода.
+const FONTS=["Monotype Corsiva","Times New Roman","Arial","Arial Narrow","Calibri","Cambria","Georgia",
+  "Verdana","Tahoma","Segoe UI","Segoe Script","Courier New","Comic Sans MS","Impact","Garamond"];
+document.querySelectorAll(".fontSel").forEach(sel=>{
+  [["",sel.dataset.def],...FONTS.map(f=>[f,f]),["__custom","Другой шрифт…"]].forEach(([v,t])=>{
+    const o=document.createElement("option");o.value=v;o.textContent=t;sel.appendChild(o);});
+  sel.onchange=()=>{$("#"+sel.id+"Custom").style.display=sel.value==="__custom"?"block":"none";};
+});
+function fontVal(id){const v=$("#"+id).value;return v==="__custom"?$("#"+id+"Custom").value.trim():v;}
+
 // Пресеты кассет: выбор подставляет лимит минут; размеры применит сервер.
 let CASS=[];
 function fillCassettes(list){
@@ -844,9 +875,11 @@ $("#buildBtn").onclick=async()=>{
     fd.append("limit",$("#limit").value);
     fd.append("cassette",$("#cassette").value);
     fd.append("layout",$("#layout").value);
-    fd.append("spine_font",$("#spineFont").value);
+    fd.append("spine_font",fontVal("spineFont"));
     fd.append("spine_size",$("#spineSize").value);
-    fd.append("track_font",$("#trackFont").value);
+    fd.append("track_font",fontVal("trackFont"));
+    fd.append("front_font",fontVal("frontFont"));
+    fd.append("front_size",$("#frontSize").value);
     fd.append("size",$("#size").value);
     fd.append("tracklist",$("#tracklist").value);
     fd.append("cover_url",coverUrl);

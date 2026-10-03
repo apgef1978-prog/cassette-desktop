@@ -66,6 +66,8 @@ def test_no_cover():
     inner = M.front_text_inner("Натали - Ветер с моря дул (1998)", M.DEFAULT_GEOM)
     sz = int(inner.split('w:sz w:val="')[1].split('"')[0])
     assert 24 <= sz <= 30, sz       # ~13 pt: 23 символа на 61 мм
+    inner = M.front_text_inner("A - B", M.DEFAULT_GEOM, "Georgia", 40)
+    assert inner.count('w:sz w:val="40"') == 4 and '"Georgia"' in inner and M.FONT not in inner
 
 
 def test_distribute():

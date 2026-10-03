@@ -205,10 +205,10 @@ DEFAULT_GEOM = {"height_mm": 100, "front_mm": 65, "spine_mm": 11, "flap_mm": 20}
 
 VCENTER = '<w:vAlign w:val="center"/>'
 
-def front_text_inner(title, g, font=None):
+def front_text_inner(title, g, font=None, sz=None):
     """Лицевая сторона без картинки: 'Исполнитель' / 'Альбом (Год)' в две строки
-    по центру, одним размером — максимальным, при котором длинная строка влезает
-    в ширину панели."""
+    по центру, одним размером — sz (полупункты) или максимальным, при котором
+    длинная строка влезает в ширину панели."""
     artist, sep, album = title.partition(" - ")
     lines = [artist.strip(), album.strip()] if sep else [title.strip()]
     width_pt = (g["front_mm"] - 4) * 72 / 25.4          # минус поля ячейки
@@ -217,7 +217,7 @@ def front_text_inner(title, g, font=None):
     # широкий шрифт (Arial Black и т.п.) может перенестись — тогда задать мельче.
     pt = min(width_pt / (max(len(l) for l in lines) * 0.55),
              height_pt / (len(lines) * 1.3), 48)
-    inner = "".join(title_para(l, max(16, int(pt * 2))) for l in lines)
+    inner = "".join(title_para(l, sz or max(16, int(pt * 2))) for l in lines)
     inner = inner.replace("<w:pPr>", '<w:pPr><w:jc w:val="center"/>')
     return inner.replace('"%s"' % FONT, '"%s"' % esc(font)) if font else inner
 
@@ -247,7 +247,7 @@ def whole_layout(xml, g, title_inner, tracks_inner, front_inner=None):
 
 def make_docx(out_path, title_lines, header_a, header_b, side_a, side_b, sz, cover_src,
               geom=None, whole=False, spine_font=None, spine_sz=None, track_font=None,
-              front_title=None):
+              front_title=None, front_font=None, front_sz=None):
     """title_lines — список строк заголовка (1 — один альбом, 2 — микстейп).
     header_a/header_b — текст после 'Side A:'/'Side B:'. side_a/side_b — имена треков.
     geom — размеры кассеты в мм (см. apply_geom); None — как в шаблоне.
@@ -255,7 +255,8 @@ def make_docx(out_path, title_lines, header_a, header_b, side_a, side_b, sz, cov
     spine_font/spine_sz — шрифт и размер (полупункты) торца-заголовка;
     track_font — шрифт треклиста (заголовки сторон и треки). None — как в шаблоне.
     cover_src=None — вместо картинки на лицевой стороне название front_title
-    (по умолчанию первая строка заголовка) шрифтом торца."""
+    (по умолчанию первая строка заголовка) шрифтом front_font (иначе шрифт торца)
+    и размером front_sz (полупункты; иначе максимальный влезающий)."""
     if isinstance(title_lines, str):
         title_lines = [title_lines]
     work = tempfile.mkdtemp(prefix="cassette_build_")
@@ -273,7 +274,7 @@ def make_docx(out_path, title_lines, header_a, header_b, side_a, side_b, sz, cov
     front_inner = None
     if not cover_src:
         front_inner = front_text_inner(front_title or title_lines[0],
-                                       geom or DEFAULT_GEOM, spine_font)
+                                       geom or DEFAULT_GEOM, front_font or spine_font, front_sz)
     if whole:
         geom = geom or DEFAULT_GEOM
         xml = whole_layout(apply_geom(xml, geom), geom, title_inner, tracks_inner, front_inner)
