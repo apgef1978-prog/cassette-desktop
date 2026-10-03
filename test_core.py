@@ -30,9 +30,42 @@ def test_whole():
     x = M.whole_layout(M.apply_geom(tpl_xml(), g), g, M.build_title_inner(["A - B (1990)"]),
                        M.build_cell_inner("h", "h", ["s1"], ["s2"], 18))
     assert x.count("<w:tbl>") == 1 and x.count("<w:tc>") == 3
-    assert '<w:gridCol w:w="3691"/><w:gridCol w:w="720"/><w:gridCol w:w="3691"/>' in x
-    assert 'btLr' in x and "<w:drawing>" in x and "A - B (1990)" in x and "<w:sectPr" in x
+    assert '<w:gridCol w:w="720"/><w:gridCol w:w="3691"/><w:gridCol w:w="3691"/>' in x
+    # порядок: торец -> обложка -> треклист
+    assert x.index("btLr") < x.index("<w:drawing>") < x.index("Side A:")
+    assert "A - B (1990)" in x and "<w:sectPr" in x
     import xml.dom.minidom; xml.dom.minidom.parseString(x)
+
+
+def test_fonts():
+    import tempfile
+    from PIL import Image
+    img = tempfile.mktemp(suffix=".jpg"); Image.new("RGB", (50, 50)).save(img)
+    out = tempfile.mktemp(suffix=".docx")
+    M.make_docx(out, ["A - B"], "h", "h", ["s1"], ["s2"], 18, img, whole=True,
+                spine_font="Arial", spine_sz=20, track_font="Georgia")
+    x = zipfile.ZipFile(out).read("word/document.xml").decode("utf-8")
+    spine = x[:x.index("<w:drawing>")]
+    tracks = x[x.index("Side A:") - 2000:]
+    assert '"Arial"' in spine and 'w:sz w:val="20"' in spine and M.FONT not in spine
+    assert '"Georgia"' in tracks and M.FONT not in tracks
+    os.remove(img); os.remove(out)
+
+
+def test_no_cover():
+    import tempfile, xml.dom.minidom
+    for whole in (False, True):
+        out = tempfile.mktemp(suffix=".docx")
+        M.make_docx(out, ["Натали - Ветер с моря дул (1998)"], "h", "h", ["s1"], ["s2"], 18, None,
+                    whole=whole, spine_font="Arial")
+        x = zipfile.ZipFile(out).read("word/document.xml").decode("utf-8")
+        xml.dom.minidom.parseString(x)
+        assert "<w:drawing>" not in x
+        assert ">Натали<" in x and ">Ветер с моря дул (1998)<" in x and '"Arial"' in x
+        os.remove(out)
+    inner = M.front_text_inner("Натали - Ветер с моря дул (1998)", M.DEFAULT_GEOM)
+    sz = int(inner.split('w:sz w:val="')[1].split('"')[0])
+    assert 24 <= sz <= 30, sz       # ~13 pt: 23 символа на 61 мм
 
 
 def test_distribute():
@@ -43,5 +76,5 @@ def test_distribute():
 
 
 if __name__ == "__main__":
-    test_geom(); test_whole(); test_distribute()
+    test_geom(); test_whole(); test_fonts(); test_no_cover(); test_distribute()
     print("ok")

@@ -7,6 +7,7 @@
 """
 import base64, io, json, os, re, subprocess, sys, tempfile
 import requests
+from PIL import Image
 from flask import (Flask, request, jsonify, send_from_directory,
                    render_template_string, abort)
 
@@ -350,6 +351,18 @@ def api_folder():
         t["name"] = clean_track_name(t.get("name", ""))
     return jsonify(d)
 
+def font_arg(key):
+    """Имя шрифта из формы: пусто -> None (шрифт шаблона)."""
+    return request.form.get(key, "").strip()[:64] or None
+
+def size_arg(key):
+    """Размер в pt из формы -> полупункты Word; 'auto'/мусор -> None."""
+    try:
+        pt = float(request.form.get(key, ""))
+    except ValueError:
+        return None
+    return int(round(pt * 2)) if 4 <= pt <= 72 else None
+
 @app.route("/api/build", methods=["POST"])
 def api_build():
     title = request.form.get("title", "").strip()
@@ -374,7 +387,7 @@ def api_build():
         return jsonify({"error": "выбран второй альбом, но его треклист пуст"}), 400
 
     # обложка: загруженный файл приоритетнее url
-    tmp_cover = None
+    tmp_cover, cover_warn = None, ""
     f = request.files.get("cover_file")
     try:
         if f and f.filename:
@@ -387,13 +400,21 @@ def api_build():
             with open(tmp_cover, "wb") as fh:
                 fh.write(base64.b64decode(b64))
         elif cover_url:
-            resp = requests.get(cover_url, headers=UA, timeout=20)
-            resp.raise_for_status()
-            tmp_cover = tempfile.NamedTemporaryFile(delete=False, suffix=".img").name
-            with open(tmp_cover, "wb") as fh:
-                fh.write(resp.content)
-        else:
-            return jsonify({"error": "нет обложки (загрузите файл или используйте найденную)"}), 400
+            try:
+                resp = requests.get(cover_url, headers=UA, timeout=20)
+                resp.raise_for_status()
+                tmp_cover = tempfile.NamedTemporaryFile(delete=False, suffix=".img").name
+                with open(tmp_cover, "wb") as fh:
+                    fh.write(resp.content)
+            except requests.RequestException:
+                cover_warn = "Обложка не скачалась — на лицевой стороне название альбома."
+        if tmp_cover:
+            try:
+                with Image.open(tmp_cover) as im:
+                    im.verify()
+            except Exception:
+                os.remove(tmp_cover); tmp_cover = None
+                cover_warn = "Обложка не читается как картинка — на лицевой стороне название альбома."
 
         if sideb_mode == "other":
             dist = M.distribute_mix(tracks, tracks2, limit)
@@ -423,8 +444,11 @@ def api_build():
         cover_name = base + "_cover.jpg"
         M.make_docx(os.path.join(OUT, docx_name), title_lines, header_a, header_b,
                     names_a, names_b, sz, tmp_cover, geom,
-                    whole=request.form.get("layout") == "whole")
-        M.prepare_cover(tmp_cover, os.path.join(OUT, cover_name))
+                    whole=request.form.get("layout") == "whole",
+                    spine_font=font_arg("spine_font"), spine_sz=size_arg("spine_size"),
+                    track_font=font_arg("track_font"), front_title=title)
+        if tmp_cover:
+            M.prepare_cover(tmp_cover, os.path.join(OUT, cover_name))
     finally:
         if tmp_cover and os.path.exists(tmp_cover):
             os.remove(tmp_cover)
@@ -437,6 +461,7 @@ def api_build():
     warn = ""
     if sideb_mode == "other" and not dist.get("album1_full", True):
         warn = "Первый альбом не уместился целиком: хвост не влез на Side B при лимите %g мин." % limit
+    warn = " ".join(w for w in (warn, cover_warn) if w)
     return jsonify({
         "title": " / ".join(title_lines),
         "header_a": header_a, "header_b": header_b,
@@ -444,7 +469,7 @@ def api_build():
         "sec_a": dist["sec_a"], "sec_b": dist["sec_b"],
         "dur_a": M.fmt_dur(dist["sec_a"]), "dur_b": M.fmt_dur(dist["sec_b"]),
         "sz": sz, "sz_pt": sz / 2.0, "warn": warn,
-        "docx": "/file/" + docx_name, "cover": "/img/" + cover_name,
+        "docx": "/file/" + docx_name, "cover": ("/img/" + cover_name) if tmp_cover else "",
         "docx_path": os.path.join(OUT, docx_name), "out_dir": OUT,
     })
 
@@ -539,7 +564,7 @@ PAGE = r"""<!doctype html><html lang="ru"><head><meta charset="utf-8">
       <img id="cover" class="cover" alt="обложка">
       <label>Своя обложка (необязательно)</label>
       <input id="coverFile" type="file" accept="image/*">
-      <p class="muted">Если не выбрана — берётся найденная. Кадрируется в квадрат 1:1.</p>
+      <p class="muted">Если не выбрана — берётся найденная. Кадрируется в квадрат 1:1. Нет обложки — на лицевой стороне будет название альбома.</p>
     </div>
     <div>
       <label>Название (Исполнитель - Альбом (Год))</label>
@@ -553,19 +578,40 @@ PAGE = r"""<!doctype html><html lang="ru"><head><meta charset="utf-8">
       <label>Макет</label>
       <select id="layout">
         <option value="parts">Раздельные части (торец, обложка, треклист — отдельно)</option>
-        <option value="whole">Вкладыш целиком (обложка + торец + треклист одной полосой)</option>
+        <option value="whole">Вкладыш целиком (торец + обложка + треклист одной полосой)</option>
       </select>
       <div class="row">
         <div><label>Лимит, мин/сторона</label><input id="limit" type="number" value="47" min="1" step="1"></div>
-        <div><label>Шрифт треков</label>
+      </div>
+      <div class="row">
+        <div><label>Шрифт торца</label><input id="spineFont" list="fonts" placeholder="Monotype Corsiva"></div>
+        <div><label>Размер торца</label>
+          <select id="spineSize">
+            <option value="auto">Авто (14 / 12 pt)</option>
+            <option>18</option><option>16</option><option>14</option><option>13</option><option>12</option>
+            <option>11</option><option>10</option><option>9</option><option>8</option>
+          </select>
+        </div>
+      </div>
+      <div class="row">
+        <div><label>Шрифт треклиста</label><input id="trackFont" list="fonts" placeholder="Monotype Corsiva"></div>
+        <div><label>Размер треков</label>
           <select id="size">
             <option value="auto">Авто (по эталону)</option>
+            <option value="24">12 pt</option>
             <option value="22">11 pt</option><option value="20">10 pt</option>
             <option value="18">9 pt</option><option value="16">8 pt</option>
             <option value="14">7 pt</option>
           </select>
         </div>
       </div>
+      <datalist id="fonts">
+        <option>Monotype Corsiva</option><option>Times New Roman</option><option>Arial</option>
+        <option>Arial Narrow</option><option>Calibri</option><option>Cambria</option><option>Georgia</option>
+        <option>Verdana</option><option>Tahoma</option><option>Segoe UI</option><option>Segoe Script</option>
+        <option>Courier New</option><option>Comic Sans MS</option><option>Impact</option><option>Garamond</option>
+      </datalist>
+      <p class="muted" style="margin:4px 0 0">Шрифт можно выбрать из списка или вписать любой, установленный в Windows. Пусто — как в шаблоне.</p>
       <label>Треклист — по строке на трек: <code>Название | M:SS</code></label>
       <textarea id="tracklist" placeholder="Ветер с моря дул | 3:45&#10;Посвящение друзьям | 3:37"></textarea>
     </div>
@@ -681,7 +727,7 @@ $("#searchBtn").onclick=()=>doSearch($("#q").value.trim(),$("#results"),$("#sear
     const d=await fetchAlbum(a.source,a.id,el);
     $("#title").value=d.title; coverUrl=d.cover||""; $("#cover").src=d.cover||"";
     $("#tracklist").value=d.tracks.map(t=>`${t.name} | ${t.dur}`).join("\n");
-    $("#searchErr").textContent=d.cover?"":"Обложка не найдена — загрузите свою.";
+    $("#searchErr").textContent=d.cover?"":"Обложка не найдена — загрузите свою, иначе на лицевой стороне будет название альбома.";
   }catch(e){$("#searchErr").textContent=e.message;}
 });
 
@@ -704,7 +750,7 @@ async function loadFromFolder(btn, err, titleEl, listEl, useCover){
     titleEl.value=d.title;
     listEl.value=d.tracks.map(t=>`${t.name} | ${t.dur}`).join("\n");
     if(useCover){coverUrl=d.cover||""; $("#cover").src=d.cover||"";
-      err.textContent=d.cover?"":"Обложка в папке не найдена — загрузите свою.";}
+      err.textContent=d.cover?"":"Обложка в папке не найдена — загрузите свою, иначе на лицевой стороне будет название альбома.";}
   }catch(e){err.textContent=e.message;}
   finally{btn.disabled=false;btn.classList.remove("spin");btn.textContent=t0;}
 }
@@ -798,6 +844,9 @@ $("#buildBtn").onclick=async()=>{
     fd.append("limit",$("#limit").value);
     fd.append("cassette",$("#cassette").value);
     fd.append("layout",$("#layout").value);
+    fd.append("spine_font",$("#spineFont").value);
+    fd.append("spine_size",$("#spineSize").value);
+    fd.append("track_font",$("#trackFont").value);
     fd.append("size",$("#size").value);
     fd.append("tracklist",$("#tracklist").value);
     fd.append("cover_url",coverUrl);
@@ -817,7 +866,8 @@ $("#buildBtn").onclick=async()=>{
     $("#bDur").textContent="— "+d.header_b+" ("+d.dur_b+")";
     const fill=(ol,arr)=>{ol.innerHTML=arr.map(t=>`<li><span>${t.n} — ${t.name}</span><span>${t.dur}</span></li>`).join("");};
     fill($("#sideA"),d.side_a); fill($("#sideB"),d.side_b);
-    $("#pvCover").src=d.cover+"?t="+Date.now();
+    $("#pvCover").style.display=d.cover?"":"none";
+    if(d.cover)$("#pvCover").src=d.cover+"?t="+Date.now();
     $("#savedPath").textContent="Сохранено: "+d.docx_path;
     $("#dlDocx").href=d.docx;
     $("#preview").style.display="block";

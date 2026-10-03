@@ -145,10 +145,10 @@ def title_para(text, sz=28):
     return ('<w:p><w:pPr>' + rpr + '</w:pPr><w:r>' + rpr
             + '<w:t xml:space="preserve">' + esc(text) + '</w:t></w:r></w:p>')
 
-def build_title_inner(lines):
-    """Одна или несколько строк заголовка. Две строки делаем чуть мельче (sz=24),
-    чтобы сохранить высоту ячейки."""
-    sz = 28 if len(lines) <= 1 else 24
+def build_title_inner(lines, sz=None):
+    """Одна или несколько строк заголовка. По умолчанию две строки делаем чуть
+    мельче (sz=24), чтобы сохранить высоту ячейки; sz задаёт размер явно."""
+    sz = sz or (28 if len(lines) <= 1 else 24)
     return "".join(title_para(l, sz) for l in lines)
 
 def build_cell_inner(header_a, header_b, side_a, side_b, sz):
@@ -167,8 +167,9 @@ def prepare_cover(src, dst, box=600):
     sq = ImageOps.fit(im, (box, box), Image.LANCZOS, centering=(0.5, 0.5))
     sq.save(dst, "JPEG", quality=92)
 
-def _replace_cell_inner(xml, marker, inner):
-    """Заменяет абзацы ячейки, содержащей текст marker, сохраняя её tcPr (размер)."""
+def _replace_cell_inner(xml, marker, inner, tcpr_extra=""):
+    """Заменяет абзацы ячейки, содержащей текст marker, сохраняя её tcPr (размер).
+    tcpr_extra дописывается в конец tcPr (напр. вертикальное выравнивание)."""
     i = xml.find(marker)
     if i < 0:
         return xml
@@ -176,7 +177,8 @@ def _replace_cell_inner(xml, marker, inner):
     tc_end = xml.find("</w:tc>", i) + len("</w:tc>")
     cell = xml[tc_start:tc_end]
     tcpr_end = cell.find("</w:tcPr>") + len("</w:tcPr>")
-    new_cell = cell[:tcpr_end] + inner + "</w:tc>"
+    new_cell = (cell[:tcpr_end - len("</w:tcPr>")] + tcpr_extra + "</w:tcPr>"
+                + inner + "</w:tc>")
     return xml[:tc_start] + new_cell + xml[tc_end:]
 
 def apply_geom(xml, g):
@@ -198,10 +200,29 @@ def apply_geom(xml, g):
         xml = xml.replace(old, new)
     return xml
 
+FONT = "Monotype Corsiva"   # шрифт шаблона; свой подставляется заменой в make_docx
 DEFAULT_GEOM = {"height_mm": 100, "front_mm": 65, "spine_mm": 11, "flap_mm": 20}
 
-def whole_layout(xml, g, title_inner, tracks_inner):
-    """Вкладыш одной полосой: [обложка | торец | треклист], общая высота.
+VCENTER = '<w:vAlign w:val="center"/>'
+
+def front_text_inner(title, g, font=None):
+    """Лицевая сторона без картинки: 'Исполнитель' / 'Альбом (Год)' в две строки
+    по центру, одним размером — максимальным, при котором длинная строка влезает
+    в ширину панели."""
+    artist, sep, album = title.partition(" - ")
+    lines = [artist.strip(), album.strip()] if sep else [title.strip()]
+    width_pt = (g["front_mm"] - 4) * 72 / 25.4          # минус поля ячейки
+    height_pt = (g["height_mm"] - 10) * 72 / 25.4
+    # ponytail: метрик шрифта нет — средняя ширина жирной буквы ~0.55 em;
+    # широкий шрифт (Arial Black и т.п.) может перенестись — тогда задать мельче.
+    pt = min(width_pt / (max(len(l) for l in lines) * 0.55),
+             height_pt / (len(lines) * 1.3), 48)
+    inner = "".join(title_para(l, max(16, int(pt * 2))) for l in lines)
+    inner = inner.replace("<w:pPr>", '<w:pPr><w:jc w:val="center"/>')
+    return inner.replace('"%s"' % FONT, '"%s"' % esc(font)) if font else inner
+
+def whole_layout(xml, g, title_inner, tracks_inner, front_inner=None):
+    """Вкладыш одной полосой: [торец | обложка | треклист], общая высота.
     Берёт рамки и картинку из шаблона (после apply_geom), остальные таблицы
     шаблона заменяет одной. Текст торца повёрнут (снизу вверх)."""
     tw = lambda mm: int(round(mm * 1440 / 25.4))
@@ -211,24 +232,30 @@ def whole_layout(xml, g, title_inner, tracks_inner):
     tblpr = re.search(r"<w:tblPr>.*?</w:tblPr>", tables[2], re.S).group(0)
     cover = re.search(r"</w:tcPr>(.*)</w:tc>", tables[1], re.S).group(1)
     w, s = tw(g["front_mm"]), tw(g["spine_mm"])
+    front = cover if front_inner is None else front_inner
     cell = lambda width, inner, extra="": (
         '<w:tc><w:tcPr><w:tcW w:w="%d" w:type="dxa"/>%s</w:tcPr>%s</w:tc>' % (width, extra, inner))
     spine = title_inner.replace("<w:pPr>", '<w:pPr><w:jc w:val="center"/>')
     tbl = ('<w:tbl>' + tblpr
-           + '<w:tblGrid><w:gridCol w:w="%d"/><w:gridCol w:w="%d"/><w:gridCol w:w="%d"/></w:tblGrid>' % (w, s, w)
+           + '<w:tblGrid><w:gridCol w:w="%d"/><w:gridCol w:w="%d"/><w:gridCol w:w="%d"/></w:tblGrid>' % (s, w, w)
            + '<w:tr><w:trPr><w:trHeight w:val="%d"/></w:trPr>' % tw(g["height_mm"])
-           + cell(w, cover)
            + cell(s, spine, '<w:textDirection w:val="btLr"/><w:vAlign w:val="center"/>')
+           + cell(w, front, "" if front_inner is None else VCENTER)
            + cell(w, tracks_inner)
            + '</w:tr></w:tbl><w:p/>')
     return xml[:b0] + tbl + xml[b1:]
 
 def make_docx(out_path, title_lines, header_a, header_b, side_a, side_b, sz, cover_src,
-              geom=None, whole=False):
+              geom=None, whole=False, spine_font=None, spine_sz=None, track_font=None,
+              front_title=None):
     """title_lines — список строк заголовка (1 — один альбом, 2 — микстейп).
     header_a/header_b — текст после 'Side A:'/'Side B:'. side_a/side_b — имена треков.
     geom — размеры кассеты в мм (см. apply_geom); None — как в шаблоне.
-    whole — вкладыш одной полосой (обложка + торец + треклист)."""
+    whole — вкладыш одной полосой (торец + обложка + треклист).
+    spine_font/spine_sz — шрифт и размер (полупункты) торца-заголовка;
+    track_font — шрифт треклиста (заголовки сторон и треки). None — как в шаблоне.
+    cover_src=None — вместо картинки на лицевой стороне название front_title
+    (по умолчанию первая строка заголовка) шрифтом торца."""
     if isinstance(title_lines, str):
         title_lines = [title_lines]
     work = tempfile.mkdtemp(prefix="cassette_build_")
@@ -237,12 +264,22 @@ def make_docx(out_path, title_lines, header_a, header_b, side_a, side_b, sz, cov
     docxml_path = os.path.join(work, "word", "document.xml")
     xml = open(docxml_path, encoding="utf-8").read()
 
-    title_inner = build_title_inner(title_lines)
+    title_inner = build_title_inner(title_lines, spine_sz)
     tracks_inner = build_cell_inner(header_a, header_b, side_a, side_b, sz)
+    if spine_font:
+        title_inner = title_inner.replace('"%s"' % FONT, '"%s"' % esc(spine_font))
+    if track_font:
+        tracks_inner = tracks_inner.replace('"%s"' % FONT, '"%s"' % esc(track_font))
+    front_inner = None
+    if not cover_src:
+        front_inner = front_text_inner(front_title or title_lines[0],
+                                       geom or DEFAULT_GEOM, spine_font)
     if whole:
         geom = geom or DEFAULT_GEOM
-        xml = whole_layout(apply_geom(xml, geom), geom, title_inner, tracks_inner)
+        xml = whole_layout(apply_geom(xml, geom), geom, title_inner, tracks_inner, front_inner)
     else:
+        if front_inner is not None:          # картинку в ячейке обложки -> текст
+            xml = _replace_cell_inner(xml, "<w:drawing>", front_inner, VCENTER)
         # 1) Заголовок (Table 0) — одна или две строки
         xml = _replace_cell_inner(xml, "ИСПОЛНИТЕЛЬ - НАЗВАНИЕ АЛЬБОМА (ГОД)", title_inner)
         # 2) Левая ячейка Table 2 — треклист
@@ -253,7 +290,8 @@ def make_docx(out_path, title_lines, header_a, header_b, side_a, side_b, sz, cov
     open(docxml_path, "w", encoding="utf-8").write(xml)
 
     # 3) Обложка
-    prepare_cover(cover_src, os.path.join(work, "word", "media", "image1.jpg"))
+    if cover_src:
+        prepare_cover(cover_src, os.path.join(work, "word", "media", "image1.jpg"))
 
     # 4) Пересобрать .docx
     if os.path.exists(out_path):
