@@ -471,6 +471,10 @@ def api_build():
     warn = ""
     if sideb_mode == "other" and not dist.get("album1_full", True):
         warn = "Первый альбом не уместился целиком: хвост не влез на Side B при лимите %g мин." % limit
+    if sideb_mode != "other":
+        left = tracks[len(dist["side_a"]) + len(dist["side_b"]):]   # не дошли ни на A, ни на B
+        if left:
+            warn = "Не поместились на кассету (%d): %s." % (len(left), ", ".join(n for n, _ in left))
     warn = " ".join(w for w in (warn, cover_warn) if w)
     return jsonify({
         "title": " / ".join(title_lines),

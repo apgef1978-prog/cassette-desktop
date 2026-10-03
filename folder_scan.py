@@ -19,6 +19,7 @@ AUDIO_EXTS = (".mp3", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wma",
               ".wav", ".aiff", ".aif", ".ape", ".wv",
               ".dsf", ".dff")  # DSD: Sony DSF и Philips DSDIFF (mutagen 1.47+)
 IMG_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
+VARIOUS = {"various artists", "various", "va", "v.a.", "сборник", "разные исполнители"}
 # характерные имена файлов-обложек рядом с треками
 COVER_STEMS = ("cover", "folder", "front", "albumart", "album", "обложка")
 
@@ -157,7 +158,11 @@ def _build_result(folder, entries, cover_bytes, album_fallback=""):
 
     title = os.path.basename(folder) or album_fallback or "Альбом"
     distinct_artists = {e["artist"] for e in entries if e["artist"]}
-    one_artist = len(distinct_artists) <= 1
+    # общий «исполнитель альбома» (не сборник) — альбом одного артиста, даже если
+    # у пары треков в artist указан гость ('X feat. Y')
+    aas = {(e.get("aa") or "").lower() for e in entries}
+    one_aa = len(aas) == 1 and "" not in aas and not aas & VARIOUS
+    one_artist = len(distinct_artists) <= 1 or one_aa
 
     def track_name(e):
         if one_artist or not e["artist"]:
@@ -332,7 +337,17 @@ def scan_folder(folder):
 
         dur = int(round(getattr(getattr(audio, "info", None), "length", 0) or 0))
         title = _tag_first(easy, audio, "title") or _strip_leading_num(os.path.splitext(fn)[0])
-        artist = _tag_first(easy, audio, "albumartist", "artist", "composer")
+        # исполнитель трека важнее исполнителя альбома (в сборниках там «Various Artists»)
+        artist = _tag_first(easy, audio, "artist", "albumartist", "composer")
+        if artist.lower() in VARIOUS:
+            artist = ""
+        if not artist:                     # '01 - R.E.M. - Losing My Religion.flac'
+            fa, sep, ft = _strip_leading_num(os.path.splitext(fn)[0]).partition(" - ")
+            if sep and fa.strip().lower() not in VARIOUS:
+                artist = fa.strip()
+                if not _tag_first(easy, audio, "title"):
+                    title = ft.strip()
+        aa = _tag_first(easy, audio, "albumartist")
         album = _tag_first(easy, audio, "album")
         year = _year(_tag_first(easy, audio, "date", "originaldate", "year"))
         disc = _num(_tag_first(easy, audio, "discnumber")) or 1
@@ -348,13 +363,16 @@ def scan_folder(folder):
             cover_bytes = _embedded_cover(audio, path)
 
         entries.append({"disc": disc, "tno": tno, "fn": fn, "name": title,
-                        "artist": artist, "dur": dur})
+                        "artist": artist, "aa": aa, "dur": dur})
 
     if not entries:
         raise ValueError("в папке нет распознанных аудиофайлов")
 
-    if any(e["tno"] for e in entries):
-        entries.sort(key=lambda e: (e["disc"], e["tno"] or 9999, _natkey(e["fn"])))
+    # Номера из тегов осмысленны только для одного альбома с уникальными номерами;
+    # в сборнике из разных альбомов они вперемешку — тогда порядок по именам файлов.
+    keys = [(e["disc"], e["tno"]) for e in entries]
+    if len(albums) <= 1 and all(e["tno"] for e in entries) and len(set(keys)) == len(keys):
+        entries.sort(key=lambda e: (e["disc"], e["tno"]))
     else:
         entries.sort(key=lambda e: _natkey(e["fn"]))
 
