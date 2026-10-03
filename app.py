@@ -398,6 +398,8 @@ def api_build():
     # обложка: загруженный файл приоритетнее url
     tmp_cover, cover_warn = None, ""
     f = request.files.get("cover_file")
+    if request.form.get("front_mode") == "title":    # пользователь выбрал название вместо картинки
+        f, cover_url = None, ""
     try:
         if f and f.filename:
             tmp_cover = tempfile.NamedTemporaryFile(delete=False, suffix=".img").name
@@ -576,6 +578,11 @@ PAGE = r"""<!doctype html><html lang="ru"><head><meta charset="utf-8">
   <div class="grid">
     <div>
       <img id="cover" class="cover" alt="обложка">
+      <label>Лицевая сторона</label>
+      <select id="frontMode">
+        <option value="cover">Обложка (картинка)</option>
+        <option value="title">Название альбома (текстом)</option>
+      </select>
       <label>Своя обложка (необязательно)</label>
       <input id="coverFile" type="file" accept="image/*">
       <p class="muted">Если не выбрана — берётся найденная. Кадрируется в квадрат 1:1. Нет обложки — на лицевой стороне будет название альбома.</p>
@@ -887,6 +894,7 @@ $("#buildBtn").onclick=async()=>{
     fd.append("size",$("#size").value);
     fd.append("tracklist",$("#tracklist").value);
     fd.append("cover_url",coverUrl);
+    fd.append("front_mode",$("#frontMode").value);
     fd.append("sideb_mode",sbmode);
     fd.append("title_mode",tmode);
     fd.append("title2",$("#title2").value);
