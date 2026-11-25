@@ -478,8 +478,14 @@ def api_build():
             if artist1 and carry_fit:
                 names_b = [("%s - %s" % (artist1, n)) if i < carry_fit else n
                            for i, n in enumerate(names_b)]
-        sz = (M.auto_sz(names_a, names_b, height_mm=geom["height_mm"] if geom else 100)
+        height_mm = geom["height_mm"] if geom else 100
+        width_mm = geom["front_mm"] if geom else 65
+        sz = (M.auto_sz(names_a, names_b, height_mm=height_mm, width_mm=width_mm)
               if fixed_sz is None else fixed_sz)
+        fit_warn = ""
+        if not M.fits(names_a, names_b, sz, height_mm, width_mm):
+            fit_warn = ("Треклист длинный: при размере %g pt он может не уместиться "
+                        "на страницу — проверьте в Word или уменьшите шрифт." % (sz / 2.0))
 
         base = slug(title)
         if sideb_mode == "other" and title2:
@@ -514,7 +520,7 @@ def api_build():
         left = tracks[len(dist["side_a"]) + len(dist["side_b"]):]   # не дошли ни на A, ни на B
         if left:
             warn = "Не поместились на кассету (%d): %s." % (len(left), ", ".join(n for n, _ in left))
-    warn = " ".join(w for w in (warn, cover_warn) if w)
+    warn = " ".join(w for w in (warn, cover_warn, fit_warn) if w)
     return jsonify({
         "title": " / ".join(title_lines),
         "header_a": header_a, "header_b": header_b,

@@ -77,6 +77,20 @@ def test_distribute():
     assert len(M.distribute(t, 46)["side_a"]) == 9 and len(M.distribute(t, 30)["side_a"]) == 6
 
 
+def test_autosz():
+    # короткие названия: 20 треков помещаются 9 pt (эталон «Best Hits»)
+    short = ["%02d - Artist - Song" % i for i in range(1, 21)]
+    assert M.auto_sz(short[:10], short[10:]) == 18, M.auto_sz(short[:10], short[10:])
+    # длинные названия: при 11 pt каждое переносится в две строки и не влезает,
+    # при 8 pt — помещается (реальный случай «CD1»)
+    long_names = ["%02d - Italove - I Finally Realized(Clayback Clay Remix Party)" % i
+                  for i in range(1, 17)]
+    sz = M.auto_sz(long_names[:8], long_names[8:])
+    assert sz <= 16, sz
+    assert M.fits(long_names[:8], long_names[8:], sz), sz
+    assert not M.fits(long_names[:8], long_names[8:], 22)
+
+
 if __name__ == "__main__":
-    test_geom(); test_whole(); test_fonts(); test_no_cover(); test_distribute()
+    test_geom(); test_whole(); test_fonts(); test_no_cover(); test_distribute(); test_autosz()
     print("ok")

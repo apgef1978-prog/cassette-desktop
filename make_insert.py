@@ -82,19 +82,46 @@ def distribute_mix(tracks_a, tracks_b, limit_min=47):
             "carry": carry, "album1_full": album1_full,
             "total_a": sum(s for _, s in tracks_a), "total_b": sum(s for _, s in tracks_b)}
 
-def auto_sz(side_a, side_b, sizes=(22, 20, 18, 16, 14), height_mm=100):
-    """Эвристика выбора sz (LibreOffice-рендер недоступен). Калибровка по эталону
-    Bon Jovi: 22 строки треков + 2 заголовка(12pt) помещаются при 8pt.
-    Ёмкость ~ 192 pt высоты под треки при высоте вкладыша 100 мм (масштабируется).
-    Возвращает крупнейший sz из списка, влезающий."""
-    lines = len(side_a) + len(side_b)
-    if lines == 0:
+# Средняя ширина символа Monotype Corsiva в долях em (шрифт узкий, курсивный).
+# Подобрано по рендерам: 22 строки коротких названий укладываются в 9 pt,
+# а 16 длинных (с «(Remix)») требуют 8 pt.
+CHAR_EM = 0.36
+LINE_SPACING = 1.15
+SAFETY = 0.92          # запас на различия метрик Word и LibreOffice
+
+def _lines_needed(names, sz, width_mm):
+    """Сколько визуальных строк займут треки при размере sz (полупункты):
+    учитываем перенос длинных названий, а не только число треков."""
+    pt = sz / 2.0
+    usable_pt = (width_mm - 4) * 72 / 25.4        # ширина ячейки без полей
+    chars_per_line = max(10, int(usable_pt / (pt * CHAR_EM)))
+    return sum(max(1, -(-len(n) // chars_per_line)) for n in names)
+
+def auto_sz(side_a, side_b, sizes=(22, 20, 18, 16, 14), height_mm=100, width_mm=65):
+    """Крупнейший sz, при котором треклист влезает в панель по высоте.
+
+    Раньше считались просто строки треков, и длинные названия («… (Remix)»)
+    переносились в две строки: вкладыш вырастал вдвое и уезжал на вторую
+    страницу. Теперь оценка идёт по визуальным строкам с учётом ширины панели."""
+    names = list(side_a) + list(side_b)
+    if not names:
         return sizes[0]
-    max_pt = 192.0 * height_mm / 100 / lines
+    avail_pt = (height_mm - 8) * 72 / 25.4 * SAFETY
     for sz in sizes:               # от крупного к мелкому
-        if sz / 2.0 <= max_pt:
+        lines = _lines_needed(names, sz, width_mm)
+        need = (lines + 2) * sz / 2.0 * LINE_SPACING + 6   # +2 заголовка сторон
+        if need <= avail_pt:
             return sz
     return sizes[-1]
+
+def fits(names_a, names_b, sz, height_mm=100, width_mm=65):
+    """Помещается ли треклист при выбранном размере (для предупреждения в UI)."""
+    names = list(names_a) + list(names_b)
+    if not names:
+        return True
+    lines = _lines_needed(names, sz, width_mm)
+    need = (lines + 2) * sz / 2.0 * LINE_SPACING + 6
+    return need <= (height_mm - 8) * 72 / 25.4 * SAFETY
 
 def header_para(side_label, title):
     """Side A:/Side B: header — sz=24 (12pt), Monotype Corsiva, bold, 111111."""
