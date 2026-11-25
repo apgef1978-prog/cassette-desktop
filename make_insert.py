@@ -97,9 +97,11 @@ def _lines_needed(names, sz, width_mm):
     chars_per_line = max(10, int(usable_pt / (pt * CHAR_EM)))
     return sum(max(1, -(-len(n) // chars_per_line)) for n in names)
 
-def auto_sz(side_a, side_b, sizes=(22, 20, 18, 16, 14), height_mm=100, width_mm=65):
+def auto_sz(side_a, side_b, sizes=tuple(range(22, 13, -1)), height_mm=100, width_mm=65):
     """Крупнейший sz, при котором треклист влезает в панель по высоте.
 
+    Шаг — полпункта (22, 21, 20…), чтобы не терять читаемость там, где 8 pt
+    уже мелко, а 9 pt ещё не влезает.
     Раньше считались просто строки треков, и длинные названия («… (Remix)»)
     переносились в две строки: вкладыш вырастал вдвое и уезжал на вторую
     страницу. Теперь оценка идёт по визуальным строкам с учётом ширины панели."""

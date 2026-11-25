@@ -90,6 +90,13 @@ def test_autosz():
     assert M.fits(long_names[:8], long_names[8:], sz), sz
     assert not M.fits(long_names[:8], long_names[8:], 22)
 
+    # реальный случай «CD1»: названия ~55 символов -> 8,5 pt, а 9 pt уже нет
+    cd1 = ["%02d - Fred Ventura - Dancing Alone(A.P. Mono 1984 Remix)" % i
+           for i in range(1, 17)]
+    assert M.auto_sz(cd1[:8], cd1[8:]) == 17, M.auto_sz(cd1[:8], cd1[8:])
+    assert M.fits(cd1[:8], cd1[8:], 17)
+    assert not M.fits(cd1[:8], cd1[8:], 18)
+
 
 if __name__ == "__main__":
     test_geom(); test_whole(); test_fonts(); test_no_cover(); test_distribute(); test_autosz()

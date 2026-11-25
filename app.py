@@ -667,9 +667,11 @@ PAGE = r"""<!doctype html><html lang="ru"><head><meta charset="utf-8">
           <select id="size">
             <option value="auto">Авто (по эталону)</option>
             <option value="24">12 pt</option>
-            <option value="22">11 pt</option><option value="20">10 pt</option>
-            <option value="18">9 pt</option><option value="16">8 pt</option>
-            <option value="14">7 pt</option>
+            <option value="22">11 pt</option><option value="21">10,5 pt</option>
+            <option value="20">10 pt</option>
+            <option value="19">9,5 pt</option><option value="18">9 pt</option>
+            <option value="17">8,5 pt</option><option value="16">8 pt</option>
+            <option value="15">7,5 pt</option><option value="14">7 pt</option>
           </select>
         </div>
       </div>
