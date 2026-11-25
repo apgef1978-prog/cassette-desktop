@@ -5,11 +5,11 @@
 Запуск:  ./.venv/bin/python app.py   →   http://<host>:8000/
 Источник треклистов/обложек: iTunes Search API (без токена, с длительностями).
 """
-import base64, io, json, os, re, subprocess, sys, tempfile
+import base64, json, os, re, subprocess, sys, tempfile
 import requests
 from PIL import Image
 from flask import (Flask, request, jsonify, send_from_directory,
-                   render_template_string, abort)
+                   render_template_string)
 
 import make_insert as M
 from paths import output_dir, user_copy
@@ -21,9 +21,21 @@ app = Flask(__name__)
 UA = {"User-Agent": "cassette-insert/1.0 (apgef1978@gmail.com)"}
 
 # ---------------------------------------------------------------------------
-def slug(s):
-    s = re.sub(r"[^\w\-]+", "_", s, flags=re.U).strip("_")
-    return s or "insert"
+# Имя файла: не длиннее MAX_NAME (иначе путь в «Документах» упирается в лимит
+# Windows 260 символов) и не совпадает с зарезервированными именами устройств.
+MAX_NAME = 80
+_WIN_RESERVED = {"CON", "PRN", "AUX", "NUL"} | {"COM%d" % i for i in range(1, 10)} \
+    | {"LPT%d" % i for i in range(1, 10)}
+
+def slug(s, max_len=MAX_NAME):
+    s = re.sub(r"[^\w\-]+", "_", s or "", flags=re.U).strip("_-")
+    if len(s) > max_len:
+        s = s[:max_len].rstrip("_-")
+    if not s:
+        return "insert"
+    if s.split(".")[0].upper() in _WIN_RESERVED:
+        s = "_" + s
+    return s
 
 def unique_base(base):
     """Имя без перезаписи прежних вкладышей: base, base_2, base_3, …"""
@@ -372,11 +384,30 @@ def size_arg(key):
         return None
     return int(round(pt * 2)) if 4 <= pt <= 72 else None
 
+def form_number(key, default, lo, hi, label):
+    """Число из формы в диапазоне [lo, hi]. Пусто -> default, мусор -> ValueError
+    с понятным текстом (иначе неверный ввод даёт 500 вместо 400)."""
+    raw = (request.form.get(key) or "").strip().replace(",", ".")
+    if not raw:
+        return default
+    try:
+        val = float(raw)
+    except ValueError:
+        raise ValueError("%s: нужно число" % label)
+    if val != val or not lo <= val <= hi:          # val != val отсекает nan
+        raise ValueError("%s: допустимо от %g до %g" % (label, lo, hi))
+    return val
+
 @app.route("/api/build", methods=["POST"])
 def api_build():
-    title = request.form.get("title", "").strip()
-    limit = float(request.form.get("limit", "47") or 47)
-    sizemode = request.form.get("size", "auto")
+    title = (request.form.get("title") or "").strip()
+    try:
+        limit = form_number("limit", 47.0, 1, 120, "лимит минут")
+        sizemode = (request.form.get("size") or "auto").strip() or "auto"
+        fixed_sz = (None if sizemode == "auto"
+                    else int(round(form_number("size", 18.0, 8, 96, "размер шрифта"))))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     tracks = parse_tracklist(request.form.get("tracklist", ""))
     cover_url = request.form.get("cover_url", "").strip()
     sideb_mode = request.form.get("sideb_mode", "same")        # same | other
@@ -448,19 +479,25 @@ def api_build():
                 names_b = [("%s - %s" % (artist1, n)) if i < carry_fit else n
                            for i, n in enumerate(names_b)]
         sz = (M.auto_sz(names_a, names_b, height_mm=geom["height_mm"] if geom else 100)
-              if sizemode == "auto" else int(sizemode))
+              if fixed_sz is None else fixed_sz)
 
-        base = unique_base(slug(title) + ("__" + slug(title2) if sideb_mode == "other" and title2 else ""))
+        base = slug(title)
+        if sideb_mode == "other" and title2:
+            base += "__" + slug(title2)
+        base = unique_base(base[:MAX_NAME].rstrip("_-") or "insert")
         docx_name = base + ".docx"
         cover_name = base + "_cover.jpg"
-        M.make_docx(os.path.join(OUT, docx_name), title_lines, header_a, header_b,
-                    names_a, names_b, sz, tmp_cover, geom,
-                    whole=request.form.get("layout") == "whole",
-                    spine_font=font_arg("spine_font"), spine_sz=size_arg("spine_size"),
-                    track_font=font_arg("track_font"), front_title=title,
-                    front_font=font_arg("front_font"), front_sz=size_arg("front_size"))
-        if tmp_cover:
-            M.prepare_cover(tmp_cover, os.path.join(OUT, cover_name))
+        try:
+            M.make_docx(os.path.join(OUT, docx_name), title_lines, header_a, header_b,
+                        names_a, names_b, sz, tmp_cover, geom,
+                        whole=request.form.get("layout") == "whole",
+                        spine_font=font_arg("spine_font"), spine_sz=size_arg("spine_size"),
+                        track_font=font_arg("track_font"), front_title=title,
+                        front_font=font_arg("front_font"), front_sz=size_arg("front_size"))
+            if tmp_cover:
+                M.prepare_cover(tmp_cover, os.path.join(OUT, cover_name))
+        except Exception as e:      # noqa: BLE001 — наружу отдаём JSON, а не HTML-500
+            return jsonify({"error": "не удалось собрать вкладыш: %s" % e}), 500
     finally:
         if tmp_cover and os.path.exists(tmp_cover):
             os.remove(tmp_cover)
@@ -724,6 +761,11 @@ PAGE = r"""<!doctype html><html lang="ru"><head><meta charset="utf-8">
 <script>
 const $=s=>document.querySelector(s);
 const SRC={itunes:"iTunes",deezer:"Deezer",mb:"MusicBrainz"};
+const ESC={"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"};
+// Данные приходят из внешних баз (iTunes/Deezer/MB) и от пользователя — перед
+// вставкой в innerHTML их обязательно экранируем, иначе скрипт в названии альбома
+// выполнится в окне с доступом к pywebview.api.
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>ESC[c]);
 let coverUrl="";
 
 // Универсальный поиск: pick(album) вызывается при клике по результату.
@@ -737,8 +779,8 @@ async function doSearch(query, container, errEl, pick){
     if(!d.results.length){container.innerHTML="<p class='muted'>Ничего не найдено.</p>";return;}
     d.results.forEach(a=>{
       const el=document.createElement("div"); el.className="res";
-      el.innerHTML=`<img src="${a.cover||''}"><div><div>${a.artist} — ${a.album}</div>
-        <small>${a.year||'?'} · ${a.tracks||'?'} треков · <b>${SRC[a.source]||a.source}</b></small></div>`;
+      el.innerHTML=`<img src="${esc(a.cover)}"><div><div>${esc(a.artist)} — ${esc(a.album)}</div>
+        <small>${esc(a.year||'?')} · ${esc(a.tracks||'?')} треков · <b>${esc(SRC[a.source]||a.source)}</b></small></div>`;
       el.onclick=()=>pick(a,el); container.appendChild(el);
     });
   }catch(e){container.innerHTML="";errEl.textContent=e.message;}
@@ -902,14 +944,14 @@ $("#buildBtn").onclick=async()=>{
     if($("#coverFile").files[0])fd.append("cover_file",$("#coverFile").files[0]);
     const r=await fetch("/api/build",{method:"POST",body:fd});
     const d=await r.json(); if(d.error)throw new Error(d.error);
-    $("#pvTitle").innerHTML=d.title.split(" / ").map(s=>`<div>${s}</div>`).join("");
+    $("#pvTitle").innerHTML=d.title.split(" / ").map(s=>`<div>${esc(s)}</div>`).join("");
     $("#pvMeta").innerHTML=
-      `<span class="pill">Шрифт: ${d.sz_pt} pt</span>`+
-      `<span class="pill">Side A: ${d.dur_a}</span><span class="pill">Side B: ${d.dur_b}</span>`+
-      (d.warn?`<div class="err" style="margin-top:8px">⚠ ${d.warn}</div>`:"");
+      `<span class="pill">Шрифт: ${esc(d.sz_pt)} pt</span>`+
+      `<span class="pill">Side A: ${esc(d.dur_a)}</span><span class="pill">Side B: ${esc(d.dur_b)}</span>`+
+      (d.warn?`<div class="err" style="margin-top:8px">⚠ ${esc(d.warn)}</div>`:"");
     $("#aDur").textContent="— "+d.header_a+" ("+d.dur_a+")";
     $("#bDur").textContent="— "+d.header_b+" ("+d.dur_b+")";
-    const fill=(ol,arr)=>{ol.innerHTML=arr.map(t=>`<li><span>${t.n} — ${t.name}</span><span>${t.dur}</span></li>`).join("");};
+    const fill=(ol,arr)=>{ol.innerHTML=arr.map(t=>`<li><span>${esc(t.n)} — ${esc(t.name)}</span><span>${esc(t.dur)}</span></li>`).join("");};
     fill($("#sideA"),d.side_a); fill($("#sideB"),d.side_b);
     $("#pvCover").style.display=d.cover?"":"none";
     if(d.cover)$("#pvCover").src=d.cover+"?t="+Date.now();
@@ -924,4 +966,5 @@ $("#buildBtn").onclick=async()=>{
 </div></body></html>"""
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8000, debug=False)
+    # только localhost: приложение без авторизации не должно светиться в сети
+    app.run(host="127.0.0.1", port=8000, debug=False)

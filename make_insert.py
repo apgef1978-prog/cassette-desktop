@@ -3,7 +3,7 @@
 """Генератор вкладыша для аудиокассеты из чистого шаблона.
 Не меняет размеры таблиц/ячеек/бокса картинки. Подгоняет только шрифт треков.
 """
-import os, re, shutil, subprocess, sys, tempfile, zipfile
+import os, re, shutil, subprocess, tempfile, zipfile
 from PIL import Image, ImageOps
 
 from paths import resource_path
@@ -167,13 +167,19 @@ def prepare_cover(src, dst, box=600):
     sq = ImageOps.fit(im, (box, box), Image.LANCZOS, centering=(0.5, 0.5))
     sq.save(dst, "JPEG", quality=92)
 
-def _replace_cell_inner(xml, marker, inner, tcpr_extra=""):
+def _replace_cell_inner(xml, marker, inner, tcpr_extra="", required=False):
     """Заменяет абзацы ячейки, содержащей текст marker, сохраняя её tcPr (размер).
-    tcpr_extra дописывается в конец tcPr (напр. вертикальное выравнивание)."""
+    tcpr_extra дописывается в конец tcPr (напр. вертикальное выравнивание).
+    required=True — маркер обязателен: если шаблон отредактировали и он пропал,
+    лучше явная ошибка, чем молча собранный вкладыш с текстом-заглушкой."""
     i = xml.find(marker)
     if i < 0:
+        if required:
+            raise ValueError("в шаблоне не найден маркер «%s» — шаблон изменён" % marker)
         return xml
     tc_start = max(xml.rfind("<w:tc>", 0, i), xml.rfind("<w:tc ", 0, i))
+    if tc_start < 0 or xml.find("</w:tc>", i) < 0:
+        raise ValueError("не удалось найти ячейку для «%s» — шаблон изменён" % marker)
     tc_end = xml.find("</w:tc>", i) + len("</w:tc>")
     cell = xml[tc_start:tc_end]
     tcpr_end = cell.find("</w:tcPr>") + len("</w:tcPr>")
@@ -229,14 +235,18 @@ def whole_layout(xml, g, title_inner, tracks_inner, front_inner=None):
     b0 = xml.find("<w:body>") + len("<w:body>")
     b1 = xml.rfind("<w:sectPr")
     tables = re.findall(r"<w:tbl>.*?</w:tbl>", xml[b0:b1], re.S)
-    tblpr = re.search(r"<w:tblPr>.*?</w:tblPr>", tables[2], re.S).group(0)
-    cover = re.search(r"</w:tcPr>(.*)</w:tc>", tables[1], re.S).group(1)
+    if len(tables) < 3:
+        raise ValueError("в шаблоне меньше трёх таблиц — формат шаблона изменён")
+    tblpr = re.search(r"<w:tblPr>.*?</w:tblPr>", tables[2], re.S)
+    cover = re.search(r"</w:tcPr>(.*)</w:tc>", tables[1], re.S)
+    if not tblpr or not cover:
+        raise ValueError("не удалось разобрать таблицы шаблона — формат изменён")
     w, s = tw(g["front_mm"]), tw(g["spine_mm"])
-    front = cover if front_inner is None else front_inner
+    front = cover.group(1) if front_inner is None else front_inner
     cell = lambda width, inner, extra="": (
         '<w:tc><w:tcPr><w:tcW w:w="%d" w:type="dxa"/>%s</w:tcPr>%s</w:tc>' % (width, extra, inner))
     spine = title_inner.replace("<w:pPr>", '<w:pPr><w:jc w:val="center"/>')
-    tbl = ('<w:tbl>' + tblpr
+    tbl = ('<w:tbl>' + tblpr.group(0)
            + '<w:tblGrid><w:gridCol w:w="%d"/><w:gridCol w:w="%d"/><w:gridCol w:w="%d"/></w:tblGrid>' % (s, w, w)
            + '<w:tr><w:trPr><w:trHeight w:val="%d"/></w:trPr>' % tw(g["height_mm"])
            + cell(s, spine, '<w:textDirection w:val="btLr"/><w:vAlign w:val="center"/>')
@@ -260,50 +270,56 @@ def make_docx(out_path, title_lines, header_a, header_b, side_a, side_b, sz, cov
     if isinstance(title_lines, str):
         title_lines = [title_lines]
     work = tempfile.mkdtemp(prefix="cassette_build_")
-    with zipfile.ZipFile(TEMPLATE) as z:
-        z.extractall(work)
-    docxml_path = os.path.join(work, "word", "document.xml")
-    xml = open(docxml_path, encoding="utf-8").read()
+    try:
+        with zipfile.ZipFile(TEMPLATE) as z:
+            z.extractall(work)
+        docxml_path = os.path.join(work, "word", "document.xml")
+        with open(docxml_path, encoding="utf-8") as fh:
+            xml = fh.read()
 
-    title_inner = build_title_inner(title_lines, spine_sz)
-    tracks_inner = build_cell_inner(header_a, header_b, side_a, side_b, sz)
-    if spine_font:
-        title_inner = title_inner.replace('"%s"' % FONT, '"%s"' % esc(spine_font))
-    if track_font:
-        tracks_inner = tracks_inner.replace('"%s"' % FONT, '"%s"' % esc(track_font))
-    front_inner = None
-    if not cover_src:
-        front_inner = front_text_inner(front_title or title_lines[0],
-                                       geom or DEFAULT_GEOM, front_font or spine_font, front_sz)
-    if whole:
-        geom = geom or DEFAULT_GEOM
-        xml = whole_layout(apply_geom(xml, geom), geom, title_inner, tracks_inner, front_inner)
-    else:
-        if front_inner is not None:          # картинку в ячейке обложки -> текст
-            xml = _replace_cell_inner(xml, "<w:drawing>", front_inner, VCENTER)
-        # 1) Заголовок (Table 0) — одна или две строки
-        xml = _replace_cell_inner(xml, "ИСПОЛНИТЕЛЬ - НАЗВАНИЕ АЛЬБОМА (ГОД)", title_inner)
-        # 2) Левая ячейка Table 2 — треклист
-        xml = _replace_cell_inner(xml, "Side A:", tracks_inner)
-        if geom:
-            xml = apply_geom(xml, geom)
+        title_inner = build_title_inner(title_lines, spine_sz)
+        tracks_inner = build_cell_inner(header_a, header_b, side_a, side_b, sz)
+        if spine_font:
+            title_inner = title_inner.replace('"%s"' % FONT, '"%s"' % esc(spine_font))
+        if track_font:
+            tracks_inner = tracks_inner.replace('"%s"' % FONT, '"%s"' % esc(track_font))
+        front_inner = None
+        if not cover_src:
+            front_inner = front_text_inner(front_title or title_lines[0],
+                                           geom or DEFAULT_GEOM, front_font or spine_font, front_sz)
+        if whole:
+            geom = geom or DEFAULT_GEOM
+            xml = whole_layout(apply_geom(xml, geom), geom, title_inner, tracks_inner, front_inner)
+        else:
+            if front_inner is not None:      # картинку в ячейке обложки -> текст
+                xml = _replace_cell_inner(xml, "<w:drawing>", front_inner, VCENTER,
+                                          required=True)
+            # 1) Заголовок (Table 0) — одна или две строки
+            xml = _replace_cell_inner(xml, "ИСПОЛНИТЕЛЬ - НАЗВАНИЕ АЛЬБОМА (ГОД)",
+                                      title_inner, required=True)
+            # 2) Левая ячейка Table 2 — треклист
+            xml = _replace_cell_inner(xml, "Side A:", tracks_inner, required=True)
+            if geom:
+                xml = apply_geom(xml, geom)
 
-    open(docxml_path, "w", encoding="utf-8").write(xml)
+        with open(docxml_path, "w", encoding="utf-8") as fh:
+            fh.write(xml)
 
-    # 3) Обложка
-    if cover_src:
-        prepare_cover(cover_src, os.path.join(work, "word", "media", "image1.jpg"))
+        # 3) Обложка
+        if cover_src:
+            prepare_cover(cover_src, os.path.join(work, "word", "media", "image1.jpg"))
 
-    # 4) Пересобрать .docx
-    if os.path.exists(out_path):
-        os.remove(out_path)
-    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as z:
-        for root, _, files in os.walk(work):
-            for f in files:
-                fp = os.path.join(root, f)
-                arc = os.path.relpath(fp, work)
-                z.write(fp, arc)
-    shutil.rmtree(work)
+        # 4) Пересобрать .docx
+        if os.path.exists(out_path):
+            os.remove(out_path)
+        with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as z:
+            for root, _, files in os.walk(work):
+                for f in files:
+                    fp = os.path.join(root, f)
+                    arc = os.path.relpath(fp, work)
+                    z.write(fp, arc)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)   # не копим каталоги при исключении
 
 def pdf_page_count(docx_path):
     outdir = os.path.join(HERE, "_pdf")

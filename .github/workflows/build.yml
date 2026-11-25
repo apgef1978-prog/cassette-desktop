@@ -1,14 +1,49 @@
 name: build-windows-exe
 
-# Сборка одного .exe под Windows (PyInstaller не кросс-компилит — нужен windows-runner).
+# Пуш в master -> только самопроверки (быстро).
+# Pull request -> только самопроверки (сборка .exe не нужна).
+# Тег vX.Y.Z   -> проверки + сборка .exe + GitHub Release.
+# Ручной запуск -> проверки + сборка (артефакт без релиза).
 on:
   push:
-    branches: [main, master]
+    branches: [master]
     tags: ["v*"]
-  workflow_dispatch:        # ручной запуск из вкладки Actions
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # Сборка .docx не требует GUI, поэтому ядро проверяется на ubuntu — дешевле.
+      - name: Self-tests
+        run: python test_core.py
+
   build:
+    needs: test
+    # На коммит в master .exe не собираем: при пуше коммита вместе с тегом
+    # получилось бы две сборки на один SHA (так и было до правки).
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -16,6 +51,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
 
       - name: Install deps
         run: |
@@ -32,7 +69,8 @@ jobs:
           path: dist/*.exe
           if-no-files-found: error
 
-  # На тег vX.Y.Z — заодно публикуем .exe в GitHub Release.
+  # На тег vX.Y.Z — публикуем .exe в GitHub Release с автоматическим списком
+  # изменений (раньше 13 релизов подряд ушли с пустым описанием).
   release:
     needs: build
     if: startsWith(github.ref, 'refs/tags/v')
@@ -47,3 +85,4 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*.exe
+          generate_release_notes: true
